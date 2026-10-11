@@ -241,6 +241,9 @@ export class Scraper {
 
   async _searchPhase(task) {
     const url = this._searchUrl(task.keyword);
+    task.progress.stepMessage = `正在打开搜索页采集关键词“${task.keyword}”...`;
+    await this.taskManager.saveProgress(task, { stepMessage: task.progress.stepMessage });
+
     const tabId = await this._navigate(url);
     // 鉴权拦截检测：导航到搜索结果页后，若命中登录弹窗立即中止（抛 AuthRequiredError）。
     await this._detectAuth(task, tabId);
@@ -253,6 +256,9 @@ export class Scraper {
     const limit = task.config.notesLimit;
     while (task.progress.noteUrls.length < limit && task.progress.scrollCount < MAX_SEARCH_SCROLLS) {
       this._throwIfCancelled(task.id);
+      task.progress.stepMessage = `正在搜索笔记（已发现 ${task.progress.noteUrls.length}/${limit} 篇）...`;
+      await this.taskManager.saveProgress(task, { stepMessage: task.progress.stepMessage });
+
       await this._send(tabId, { action: 'scroll', distance: 600, duration: 800 });
       task.progress.scrollCount += 1;
       const html = (
@@ -268,19 +274,25 @@ export class Scraper {
       await this.taskManager.saveProgress(task, {
         noteUrls: task.progress.noteUrls,
         scrollCount: task.progress.scrollCount,
+        stepMessage: `正在搜索笔记（已发现 ${task.progress.noteUrls.length}/${limit} 篇）...`,
       });
       await this._randomPause(task);
     }
 
     task.progress.notesTotal = task.progress.noteUrls.length;
-    await this.taskManager.saveProgress(task, { notesTotal: task.progress.notesTotal });
+    task.progress.stepMessage = `搜索完成，共获取 ${task.progress.notesTotal} 篇笔记，准备提取详情与评论...`;
+    await this.taskManager.saveProgress(task, {
+      notesTotal: task.progress.notesTotal,
+      stepMessage: task.progress.stepMessage,
+    });
   }
 
   // ---- 详情 + 评论阶段 ---------------------------------------------------
 
   async _detailPhase(task) {
     task.progress.phase = 'collectingNotes';
-    await this.taskManager.saveProgress(task, { phase: 'collectingNotes' });
+    task.progress.stepMessage = '正在准备提取笔记详情...';
+    await this.taskManager.saveProgress(task, { phase: 'collectingNotes', stepMessage: task.progress.stepMessage });
 
     // 关键：从 currentNoteIndex+1 开始（run 起始为 -1，故首条为 0）。
     // resume 时 task.progress.currentNoteIndex 已指向最后成功采集的索引，因此自动跳过已处理项。
@@ -288,6 +300,9 @@ export class Scraper {
     for (let i = start; i < task.progress.noteUrls.length; i++) {
       this._throwIfCancelled(task.id);
       const url = task.progress.noteUrls[i];
+      task.progress.stepMessage = `正在抓取第 ${i + 1}/${task.progress.noteUrls.length} 篇详情...`;
+      await this.taskManager.saveProgress(task, { stepMessage: task.progress.stepMessage });
+
       let tabId = null;
       try {
         tabId = await this._navigate(url);
@@ -320,10 +335,14 @@ export class Scraper {
         task.progress.currentNoteIndex = i;
         task.progress.notesCollected += 1;
         task.progress.commentsCollected += Array.isArray(comments) ? comments.length : 0;
+        task.progress.currentTitle = detail.title || '';
+        task.progress.stepMessage = `已抓取：${detail.title ? `《${detail.title.slice(0, 15)}...》` : `第 ${i + 1} 篇`}`;
         await this.taskManager.saveProgress(task, {
           currentNoteIndex: task.progress.currentNoteIndex,
           notesCollected: task.progress.notesCollected,
           commentsCollected: task.progress.commentsCollected,
+          currentTitle: task.progress.currentTitle,
+          stepMessage: task.progress.stepMessage,
         });
       } catch (err) {
         // 单条失败：记录错误，将 currentNoteIndex 推进到本索引（标记已处理，避免 resume 时死重试），继续后续。
@@ -336,6 +355,7 @@ export class Scraper {
           at: Date.now(),
         });
         task.progress.currentNoteIndex = i;
+        task.progress.stepMessage = `第 ${i + 1} 篇抓取失败，继续下一篇...`;
         await this.storage.saveTask(task);
         continue;
       }
