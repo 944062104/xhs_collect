@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>小红书采集助手</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <main class="popup">
+    <!-- 核心区 -->
+    <header class="head">
+      <h1>小红书采集助手</h1>
+      <p class="sub">关键词一键采集笔记</p>
+    </header>
+
+    <section class="core">
+      <label class="field">
+        <span>采集关键词</span>
+        <input id="keyword" type="text" placeholder="如：护肤 穿搭 美食" autofocus />
+      </label>
+
+      <label class="field">
+        <span>采集数量</span>
+        <select id="limit">
+          <option value="10">10 篇</option>
+          <option value="20" selected>20 篇</option>
+          <option value="50">50 篇</option>
+          <option value="100">100 篇</option>
+        </select>
+      </label>
+
+      <button id="startBtn" class="btn btn-primary">开始一键采集</button>
+      <button id="cancelBtn" class="btn btn-ghost" disabled>取消采集</button>
+    </section>
+
+    <!-- 进度区 -->
+    <section class="progress">
+      <div class="bar-track">
+        <div id="progressBar" class="bar-fill" style="width:0%"></div>
+      </div>
+      <div class="progress-meta">
+        <span id="progressText">0%</span>
+        <span id="statusText" class="status">待命</span>
+      </div>
+      <div id="errorBox" class="error" style="display:none"></div>
+    </section>
+
+    <!-- 导出区 -->
+    <section class="export">
+      <button id="exportJsonBtn" class="btn btn-outline">导出 JSON</button>
+      <button id="exportCsvBtn" class="btn btn-outline">导出 CSV</button>
+    </section>
+
+    <!-- 高级抽屉（折叠） -->
+    <section class="advanced">
+      <button id="advancedToggle" class="adv-toggle" aria-expanded="false">
+        <span>高级设置</span>
+        <span class="chevron">▸</span>
+      </button>
+      <div id="advancedPanel" class="adv-panel">
+        <label class="field">
+          <span>Claude API Key</span>
+          <input id="apiKey" type="password" placeholder="sk-ant-..." />
+        </label>
+
+        <label class="field field-row">
+          <span>采集评论</span>
+          <input id="comments" type="checkbox" />
+        </label>
+
+        <label class="field">
+          <span>爬取延迟</span>
+          <select id="delay">
+            <option value="0">无延迟</option>
+            <option value="500">0.5 秒</option>
+            <option value="1000">1 秒</option>
+            <option value="2000">2 秒</option>
+          </select>
+        </label>
+
+        <button id="resetBtn" class="btn btn-ghost danger">经验库重置</button>
+      </div>
+    </section>
+  </main>
+
+  <script src="popup.js"></script>
+</body>
+</html>
