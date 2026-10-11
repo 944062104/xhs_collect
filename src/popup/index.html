@@ -72,8 +72,17 @@
       </button>
       <div id="advancedPanel" class="adv-panel">
         <label class="field">
+          <span>接口协议类型</span>
+          <select id="protocol">
+            <option value="auto">自动识别 (根据地址/模型)</option>
+            <option value="openai">OpenAI 兼容 (ChatGPT / DeepSeek / 中转站)</option>
+            <option value="anthropic">Anthropic (Claude 原生)</option>
+          </select>
+        </label>
+
+        <label class="field">
           <span>API 接口地址</span>
-          <input id="apiBase" type="text" placeholder="Claude 或 OpenAI/中转地址，如 https://api.openai.com" />
+          <input id="apiBase" type="text" placeholder="留空默认官方；或填写如 https://api.openai.com" />
         </label>
 
         <label class="field">

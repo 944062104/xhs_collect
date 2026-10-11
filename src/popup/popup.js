@@ -180,6 +180,7 @@ function initPopup() {
     apiBase: $('apiBase'),
     model: $('model'),
     apiKey: $('apiKey'),
+    protocol: $('protocol'),
     testLlmBtn: $('testLlmBtn'),
     testFeedback: $('testFeedback'),
     comments: $('comments'),
@@ -203,10 +204,11 @@ function initPopup() {
 
   function loadConfig() {
     if (!chrome || !chrome.storage || !chrome.storage.local) return;
-    chrome.storage.local.get(['apiBase', 'model', 'apiKey', 'comments', 'crawlDelay', 'limit'], (cfg) => {
+    chrome.storage.local.get(['apiBase', 'model', 'apiKey', 'protocol', 'comments', 'crawlDelay', 'limit'], (cfg) => {
       if (cfg.apiBase && els.apiBase) els.apiBase.value = cfg.apiBase;
       if (cfg.model && els.model) els.model.value = cfg.model;
       if (cfg.apiKey && els.apiKey) els.apiKey.value = cfg.apiKey;
+      if (cfg.protocol && els.protocol) els.protocol.value = cfg.protocol;
       if (typeof cfg.comments === 'boolean' && els.comments) els.comments.checked = cfg.comments;
       if (typeof cfg.limit === 'number' && els.limit) els.limit.value = String(cfg.limit);
       if (typeof cfg.crawlDelay === 'number' && els.delay) {
@@ -223,6 +225,7 @@ function initPopup() {
         apiBase: els.apiBase ? els.apiBase.value.trim() : '',
         model: els.model ? els.model.value.trim() : '',
         apiKey: els.apiKey ? els.apiKey.value.trim() : '',
+        protocol: els.protocol ? els.protocol.value : 'auto',
         comments: els.comments ? els.comments.checked : false,
         crawlDelay,
         limit: els.limit ? Number(els.limit.value) || 20 : 20,
@@ -425,6 +428,7 @@ function initPopup() {
     const key = els.apiKey ? els.apiKey.value.trim() : '';
     const apiBase = els.apiBase ? els.apiBase.value.trim() : '';
     const model = els.model ? els.model.value.trim() : '';
+    const protocol = els.protocol ? els.protocol.value : 'auto';
     if (!key) {
       els.testFeedback.className = 'test-feedback fail';
       els.testFeedback.textContent = '请先填写 API Key';
@@ -435,7 +439,7 @@ function initPopup() {
     els.testLlmBtn.disabled = true;
 
     chrome.runtime.sendMessage(
-      { type: 'TEST_LLM_CONFIG', apiKey: key, apiBase, model },
+      { type: 'TEST_LLM_CONFIG', apiKey: key, apiBase, model, protocol },
       (resp) => {
         els.testLlmBtn.disabled = false;
         if (chrome.runtime.lastError || !resp || !resp.ok) {
@@ -496,6 +500,7 @@ function initPopup() {
   els.exportCsvBtn.addEventListener('click', () => onExport('csv'));
   if (els.testLlmBtn) els.testLlmBtn.addEventListener('click', onTestLlm);
 
+  if (els.protocol) els.protocol.addEventListener('change', saveConfig);
   if (els.apiBase) els.apiBase.addEventListener('change', saveConfig);
   if (els.model) els.model.addEventListener('change', saveConfig);
   if (els.apiKey) els.apiKey.addEventListener('change', saveConfig);

@@ -164,12 +164,13 @@ async function testLlmConfig(msg, sendResponse) {
   const apiKey = msg.apiKey || llmConfig.apiKey;
   const apiBase = msg.apiBase || llmConfig.apiBase;
   const model = msg.model || llmConfig.model;
+  const protocol = msg.protocol || llmConfig.protocol || 'auto';
   if (!apiKey) {
     sendResponse({ ok: false, error: 'NO_API_KEY' });
     return;
   }
   try {
-    const client = new LLMClient(apiKey, { apiBase, model });
+    const client = new LLMClient({ apiKey, apiBase, model, protocol });
     const res = await client.testConnection();
     sendResponse(res);
   } catch (err) {
@@ -251,15 +252,17 @@ async function resolveLlmConfig() {
   let apiKey = '';
   let apiBase = '';
   let model = '';
+  let protocol = 'auto';
   if (chromeApi?.storage?.local?.get) {
     try {
       const cfg = await new Promise((resolve) => {
-        chromeApi.storage.local.get(['apiKey', 'apiBase', 'model'], resolve);
+        chromeApi.storage.local.get(['apiKey', 'apiBase', 'model', 'protocol'], resolve);
       });
       if (cfg) {
         apiKey = cfg.apiKey || '';
         apiBase = cfg.apiBase || '';
         model = cfg.model || '';
+        protocol = cfg.protocol || 'auto';
       }
     } catch (_) {
       // 忽略存储读取异常
@@ -268,7 +271,7 @@ async function resolveLlmConfig() {
   if (!apiKey) {
     apiKey = await storage.getConfig('apiKey');
   }
-  return { apiKey, apiBase, model };
+  return { apiKey, apiBase, model, protocol };
 }
 
 // 供向下兼容与外部依赖注入

@@ -162,11 +162,13 @@ export class LLMClient {
     let apiKey = '';
     let model = DEFAULT_MODEL;
     let apiBase = '';
+    let protocol = 'auto';
 
     if (typeof apiKeyOrOpts === 'object' && apiKeyOrOpts !== null) {
       apiKey = apiKeyOrOpts.apiKey;
       model = apiKeyOrOpts.model || DEFAULT_MODEL;
       apiBase = apiKeyOrOpts.apiBase || apiKeyOrOpts.baseUrl || '';
+      protocol = apiKeyOrOpts.protocol || 'auto';
     } else {
       apiKey = apiKeyOrOpts;
       model = modelOpt || DEFAULT_MODEL;
@@ -178,42 +180,68 @@ export class LLMClient {
     this.apiKey = apiKey;
     this.model = model;
 
-    // 协议判断：
-    // 1. 如果 apiBase 显式包含 chat/completions 或 openai，或 model 包含 gpt/deepseek/qwen/glm/moonshot 等，
-    //    或以 sk- 开头且不是 sk-ant- 开头且配置了第三方 apiBase，判定为 OpenAI 兼容协议。
     const trimmedBase = (apiBase || '').trim().replace(/\/+$/, '');
-    const isExplicitOpenAi =
-      /\/chat\/completions\b/i.test(trimmedBase) ||
-      /openai/i.test(trimmedBase) ||
-      /deepseek|qwen|glm|moonshot|yi|baichuan|gpt/i.test(model);
-    const isExplicitAnthropic =
-      /anthropic|claude/i.test(trimmedBase) ||
-      /claude/i.test(model) ||
-      apiKey.startsWith('sk-ant-');
 
-    if (!trimmedBase) {
-      this.protocol = 'anthropic';
-      this.apiUrl = API_URL;
-    } else if (trimmedBase.includes('/chat/completions')) {
+    // 显式指定协议优先：
+    if (protocol === 'openai') {
       this.protocol = 'openai';
-      this.apiUrl = trimmedBase;
-    } else if (trimmedBase.includes('/messages')) {
+      if (!trimmedBase) {
+        this.apiUrl = 'https://api.openai.com/v1/chat/completions';
+      } else if (trimmedBase.includes('/chat/completions')) {
+        this.apiUrl = trimmedBase;
+      } else {
+        this.apiUrl = trimmedBase.endsWith('/v1') ? `${trimmedBase}/chat/completions` : `${trimmedBase}/v1/chat/completions`;
+      }
+    } else if (protocol === 'anthropic') {
       this.protocol = 'anthropic';
-      this.apiUrl = trimmedBase;
-    } else if (isExplicitAnthropic) {
-      this.protocol = 'anthropic';
-      this.apiUrl = trimmedBase.endsWith('/v1') ? `${trimmedBase}/messages` : `${trimmedBase}/v1/messages`;
-    } else if (isExplicitOpenAi) {
-      this.protocol = 'openai';
-      this.apiUrl = trimmedBase.endsWith('/v1') ? `${trimmedBase}/chat/completions` : `${trimmedBase}/v1/chat/completions`;
-    } else if (apiKey.startsWith('sk-') && !apiKey.startsWith('sk-ant-')) {
-      this.protocol = 'openai';
-      this.apiUrl = trimmedBase.endsWith('/v1')
-        ? `${trimmedBase}/chat/completions`
-        : `${trimmedBase}/v1/chat/completions`;
+      if (!trimmedBase) {
+        this.apiUrl = API_URL;
+      } else if (trimmedBase.includes('/messages')) {
+        this.apiUrl = trimmedBase;
+      } else {
+        this.apiUrl = trimmedBase.endsWith('/v1') ? `${trimmedBase}/messages` : `${trimmedBase}/v1/messages`;
+      }
     } else {
-      this.protocol = 'anthropic';
-      this.apiUrl = trimmedBase.endsWith('/v1') ? `${trimmedBase}/messages` : `${trimmedBase}/v1/messages`;
+      // 自动识别 (auto)：
+      const isExplicitOpenAi =
+        /\/chat\/completions\b/i.test(trimmedBase) ||
+        /openai/i.test(trimmedBase) ||
+        /deepseek|qwen|glm|moonshot|yi|baichuan|gpt/i.test(model);
+      const isExplicitAnthropic =
+        /anthropic|claude/i.test(trimmedBase) ||
+        /claude/i.test(model) ||
+        apiKey.startsWith('sk-ant-');
+
+      if (!trimmedBase) {
+        // 无 apiBase 时：如果显式用 OpenAI 格式（如 gpt 开头或标准 sk- key 且不是 sk-ant-），默认走 OpenAI
+        if (isExplicitOpenAi || (apiKey.startsWith('sk-') && !apiKey.startsWith('sk-ant-') && !isExplicitAnthropic)) {
+          this.protocol = 'openai';
+          this.apiUrl = 'https://api.openai.com/v1/chat/completions';
+        } else {
+          this.protocol = 'anthropic';
+          this.apiUrl = API_URL;
+        }
+      } else if (trimmedBase.includes('/chat/completions')) {
+        this.protocol = 'openai';
+        this.apiUrl = trimmedBase;
+      } else if (trimmedBase.includes('/messages')) {
+        this.protocol = 'anthropic';
+        this.apiUrl = trimmedBase;
+      } else if (isExplicitAnthropic) {
+        this.protocol = 'anthropic';
+        this.apiUrl = trimmedBase.endsWith('/v1') ? `${trimmedBase}/messages` : `${trimmedBase}/v1/messages`;
+      } else if (isExplicitOpenAi) {
+        this.protocol = 'openai';
+        this.apiUrl = trimmedBase.endsWith('/v1') ? `${trimmedBase}/chat/completions` : `${trimmedBase}/v1/chat/completions`;
+      } else if (apiKey.startsWith('sk-') && !apiKey.startsWith('sk-ant-')) {
+        this.protocol = 'openai';
+        this.apiUrl = trimmedBase.endsWith('/v1')
+          ? `${trimmedBase}/chat/completions`
+          : `${trimmedBase}/v1/chat/completions`;
+      } else {
+        this.protocol = 'anthropic';
+        this.apiUrl = trimmedBase.endsWith('/v1') ? `${trimmedBase}/messages` : `${trimmedBase}/v1/messages`;
+      }
     }
   }
 
