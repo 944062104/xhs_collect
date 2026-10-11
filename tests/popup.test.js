@@ -27,6 +27,7 @@ test('buildStartMessage 默认参数生成标准 START_TASK 消息', () => {
     notesLimit: 20,
     commentsPerNote: 0,
     outputFormat: 'json',
+    crawlDelay: 0,
   });
 });
 
@@ -36,11 +37,13 @@ test('buildStartMessage 尊重 opts.limit / comments / format', () => {
   assert.equal(msg.config.notesLimit, 50);
   assert.equal(msg.config.commentsPerNote, 20); // 默认每篇评论数 20
   assert.equal(msg.config.outputFormat, 'csv');
+  assert.equal(msg.config.crawlDelay, 0);
 });
 
 test('buildStartMessage comments=false 时 commentsPerNote 为 0', () => {
   const msg = buildStartMessage('穿搭', { comments: false });
   assert.equal(msg.config.commentsPerNote, 0);
+  assert.equal(msg.config.crawlDelay, 0);
 });
 
 test('buildStartMessage 部分 opts 走默认值', () => {
@@ -48,6 +51,12 @@ test('buildStartMessage 部分 opts 走默认值', () => {
   assert.equal(msg.config.notesLimit, 10);
   assert.equal(msg.config.commentsPerNote, 0);
   assert.equal(msg.config.outputFormat, 'json');
+  assert.equal(msg.config.crawlDelay, 0);
+});
+
+test('buildStartMessage 透传 crawlDelay（高级抽屉的爬取延迟）', () => {
+  const msg = buildStartMessage('美妆', { limit: 20, crawlDelay: 2000 });
+  assert.equal(msg.config.crawlDelay, 2000);
 });
 
 // ---------------------------------------------------------------------------
@@ -80,6 +89,15 @@ test('progressToPercent noteUrls 为空且 notesTotal=0 返回 0', () => {
 test('progressToPercent currentNoteIndex=-1（未开始遍历）应得 0%', () => {
   const p = { notesTotal: 0, noteUrls: ['a', 'b'], currentNoteIndex: -1 };
   assert.equal(progressToPercent(p), 0);
+});
+
+test('progressToPercent 结果钳制在 0–100（越界输入不溢出）', () => {
+  // notesCollected 超过 notesTotal → 仍不超过 100
+  assert.equal(progressToPercent({ notesTotal: 10, notesCollected: 999, noteUrls: [] }), 100);
+  // 越界的 currentNoteIndex → 不超过 100
+  assert.equal(progressToPercent({ notesTotal: 0, noteUrls: ['a'], currentNoteIndex: 10 }), 100);
+  // 负值不应出现
+  assert.equal(progressToPercent({ notesTotal: 0, noteUrls: [], currentNoteIndex: -5 }), 0);
 });
 
 // ---------------------------------------------------------------------------

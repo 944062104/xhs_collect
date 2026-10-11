@@ -19,11 +19,12 @@ const CRAWL_DELAYS = [0, 500, 1000, 2000];
 // 纯函数（TDD 目标，可在 Node 中测试；无任何浏览器依赖）
 // ---------------------------------------------------------------------------
 
-// 构造 START_TASK 消息。opts = { limit=20, comments=false, format='json' }。
+// 构造 START_TASK 消息。opts = { limit=20, comments=false, format='json', crawlDelay=0 }。
 function buildStartMessage(keyword, opts = {}) {
   const limit = typeof opts.limit === 'number' ? opts.limit : 20;
   const comments = Boolean(opts.comments);
   const format = opts.format === 'csv' ? 'csv' : 'json';
+  const crawlDelay = typeof opts.crawlDelay === 'number' ? opts.crawlDelay : 0;
   return {
     type: 'START_TASK',
     keyword,
@@ -31,11 +32,12 @@ function buildStartMessage(keyword, opts = {}) {
       notesLimit: limit,
       commentsPerNote: comments ? DEFAULT_COMMENTS_PER_NOTE : 0,
       outputFormat: format,
+      crawlDelay,
     },
   };
 }
 
-// 计算进度百分比（0–100 整数），缺失字段安全返回 0。
+// 计算进度百分比（0–100 整数），缺失字段安全返回 0；结果钳制在 0–100 防止越界。
 function progressToPercent(progress) {
   if (!progress || typeof progress !== 'object') return 0;
   const notesTotal = Number(progress.notesTotal) || 0;
@@ -44,13 +46,13 @@ function progressToPercent(progress) {
   const currentNoteIndex =
     typeof progress.currentNoteIndex === 'number' ? progress.currentNoteIndex : 0;
 
+  let pct = 0;
   if (notesTotal > 0) {
-    return Math.round((notesCollected / notesTotal) * 100);
+    pct = (notesCollected / notesTotal) * 100;
+  } else if (noteUrls.length > 0) {
+    pct = ((currentNoteIndex + 1) / noteUrls.length) * 100;
   }
-  if (noteUrls.length > 0) {
-    return Math.round(((currentNoteIndex + 1) / noteUrls.length) * 100);
-  }
-  return 0;
+  return Math.max(0, Math.min(100, Math.round(pct)));
 }
 
 // 状态中文标签映射；未知状态原样返回。
@@ -217,6 +219,7 @@ function initPopup() {
       limit: Number(els.limit.value) || 20,
       comments: els.comments.checked,
       format: 'json',
+      crawlDelay: Number(els.delay.value) || 0,
     });
     chrome.runtime.sendMessage(msg, (resp) => {
       if (chrome.runtime.lastError || !resp) {
