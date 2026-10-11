@@ -12,7 +12,7 @@
 | 测试 | `node --test <文件列表>`（见下方命令坑） |
 | 运行时依赖 | 无第三方库；`fake-indexeddb` 仅测试用（devDependency） |
 | 数据存储 | 仅 IndexedDB（库 `xhs-agent`，stores: `tasks`/`notes`/`config`），无外部后端 |
-| 开发分支 | `feat/xhs-agent-p1`（新功能派生自它） |
+| 开发分支 | `master`（所有功能均已集成并保留唯一直线分支） |
 | 打包产物 | `dist/xhs-agent-1.0.0.zip`（manifest 在根，可直接 load-unpacked） |
 
 ## 模块架构（一图定位）
@@ -86,13 +86,14 @@ for f in tests/site-patterns.test.js tests/storage.test.mjs tests/llm-client.tes
 ## 已知缺口（非阻断）
 
 - `manifest.json` 未声明 `icons`：加载后用 Chrome 默认图标，功能不受影响；正式上架前需补 16/48/128 图标并在 manifest 声明。
-- 真实 Chrome 端到端采集（plan Task 8 Step 1）仍待**手动**验证：代码逻辑已被 9 套件 113 测试覆盖，但真机跑通需真实小红书页面 + 有效 Claude API Key，Agent 无法代跑。
+- 真实 Chrome 端到端采集（plan Task 8 Step 1）仍待**手动**验证：代码逻辑已被 9 套件 141 测试覆盖，但真机跑通需真实小红书页面 + 有效 Claude/OpenAI API Key，Agent 无法代跑。
 
 ## 深入文档
 
 | 文档 | 用途 | 何时读 |
 |---|---|---|
-| `doc/plan.md` | 8 阶段任务、接口契约、架构与红线 | 改任何模块前、做新功能前 |
+| `doc/plan.md` | P1 基础版 8 阶段任务、接口契约、架构与红线 | 查阅初始系统基石设计时 |
+| `doc/plans/2026-10-11-comprehensive-optimization-plan.md` | 体验与功能综合优化（限流保护/即时导出/评论深度/批量词等） | 查阅最新特性演进细节时 |
 | `doc/spec.md` | P1 详细规格（字段/枚举/边界） | 实现细节不确定时 |
 | `doc/brief.md` | 需求背景与产品目标 | 理解「为什么这么做」 |
 | `.workbuddy/memory/` | 本仓库每日日志 + 长期笔记 | 接手近期改动、长期约定 |
