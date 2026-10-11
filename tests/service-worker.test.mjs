@@ -462,3 +462,52 @@ test('未知 type 回复 UNKNOWN_TYPE 且 handler 返回 true', async () => {
   assert.equal(ret, true);
   assert.deepEqual(sendResponse.last(), { ok: false, error: 'UNKNOWN_TYPE' });
 });
+
+test('TEST_LLM_CONFIG 验证 API 连接', async () => {
+  const { handler } = await buildFixture();
+  const sendResponse = makeSendResponse();
+  // 注入无效 key
+  await handler({ type: 'TEST_LLM_CONFIG', apiKey: '' }, {}, sendResponse);
+  assert.equal(sendResponse.last().ok, false);
+  assert.equal(sendResponse.last().error, 'NO_API_KEY');
+});
+
+test('GET_LATEST_TASK 返回最新任务与笔记预览', async () => {
+  const { handler, storage } = await buildFixture();
+  const sendResponse = makeSendResponse();
+  // 无任务时
+  await handler({ type: 'GET_LATEST_TASK' }, {}, sendResponse);
+  assert.deepEqual(sendResponse.last(), { ok: true, task: null, notes: [] });
+
+  // 创建任务与笔记
+  await storage.saveTask({
+    id: 't_latest',
+    keyword: '护肤',
+    status: 'completed',
+    createdAt: 100,
+    progress: { notesCollected: 1 },
+  });
+  await storage.saveNote({
+    id: 'n1',
+    taskId: 't_latest',
+    title: '护肤技巧',
+    author: '博主A',
+    collectedAt: 100,
+  });
+
+  const sendResponse2 = makeSendResponse();
+  await handler({ type: 'GET_LATEST_TASK' }, {}, sendResponse2);
+  const resp = sendResponse2.last();
+  assert.equal(resp.ok, true);
+  assert.equal(resp.task.id, 't_latest');
+  assert.equal(resp.notes.length, 1);
+  assert.equal(resp.notes[0].title, '护肤技巧');
+});
+
+test('RESET_TASK 清除当前活动运行状态', async () => {
+  const { handler } = await buildFixture();
+  const sendResponse = makeSendResponse();
+  await handler({ type: 'RESET_TASK' }, {}, sendResponse);
+  assert.equal(sendResponse.last().ok, true);
+});
+

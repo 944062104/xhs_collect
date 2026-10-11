@@ -159,6 +159,55 @@ async function exportData(msg, sendResponse) {
   sendResponse({ ok: true, format, data, filename: `xhs_${msg.taskId}.${format}` });
 }
 
+async function testLlmConfig(msg, sendResponse) {
+  const llmConfig = await resolveLlmConfig();
+  const apiKey = msg.apiKey || llmConfig.apiKey;
+  const apiBase = msg.apiBase || llmConfig.apiBase;
+  const model = msg.model || llmConfig.model;
+  if (!apiKey) {
+    sendResponse({ ok: false, error: 'NO_API_KEY' });
+    return;
+  }
+  try {
+    const client = new LLMClient(apiKey, { apiBase, model });
+    const res = await client.testConnection();
+    sendResponse(res);
+  } catch (err) {
+    sendResponse({ ok: false, error: err?.message || 'TEST_FAILED' });
+  }
+}
+
+async function getLatestTask(sendResponse) {
+  try {
+    const running = await storage.getRunningTask();
+    const task = running || (await storage.getLatestTask());
+    if (!task) {
+      sendResponse({ ok: true, task: null, notes: [] });
+      return;
+    }
+    const notes = await storage.getNotesByTaskId(task.id);
+    sendResponse({
+      ok: true,
+      task,
+      notes: Array.isArray(notes) ? notes.slice(-10).reverse() : [],
+    });
+  } catch (err) {
+    sendResponse({ ok: false, error: err?.message || 'GET_LATEST_FAILED' });
+  }
+}
+
+async function resetTask(sendResponse) {
+  try {
+    if (activeRun && scraper) {
+      await scraper.cancel(activeRun).catch(() => {});
+    }
+    activeRun = null;
+    sendResponse({ ok: true });
+  } catch (err) {
+    sendResponse({ ok: false, error: err?.message || 'RESET_FAILED' });
+  }
+}
+
 // 统一的消息入口：处理逻辑为 async 函数，返回 Promise，便于单元测试与 await。
 async function handleMessage(message, _sender, sendResponse) {
   if (!message || !message.type) {
@@ -178,6 +227,15 @@ async function handleMessage(message, _sender, sendResponse) {
         break;
       case 'EXPORT_DATA':
         await exportData(message, sendResponse);
+        break;
+      case 'TEST_LLM_CONFIG':
+        await testLlmConfig(message, sendResponse);
+        break;
+      case 'GET_LATEST_TASK':
+        await getLatestTask(sendResponse);
+        break;
+      case 'RESET_TASK':
+        await resetTask(sendResponse);
         break;
       default:
         sendResponse({ ok: false, error: 'UNKNOWN_TYPE' });
