@@ -13,6 +13,7 @@ const {
   statusLabel,
   notesToCsv,
   notesToJson,
+  isAuthRequired,
 } = require('../src/popup/popup.js');
 
 // ---------------------------------------------------------------------------
@@ -194,4 +195,23 @@ test('notesToJson 返回带缩进的 JSON 字符串', () => {
   const json = notesToJson(notes);
   assert.equal(json, JSON.stringify(notes, null, 2));
   assert.ok(json.includes('\n'), '应含换行缩进');
+});
+
+// ---------------------------------------------------------------------------
+// isAuthRequired
+// ---------------------------------------------------------------------------
+
+test('isAuthRequired 在 errors 含 AUTH_REQUIRED 时返回 true', () => {
+  assert.equal(
+    isAuthRequired({ ok: true, status: 'failed', errors: [{ code: 'AUTH_REQUIRED', phase: 'searching' }] }),
+    true
+  );
+});
+
+test('isAuthRequired 在其它错误或无错误时返回 false', () => {
+  assert.equal(isAuthRequired({ ok: true, status: 'failed', errors: [{ code: 'SELECTOR_NOT_FOUND' }] }), false);
+  assert.equal(isAuthRequired({ ok: true, status: 'completed', errors: [] }), false);
+  assert.equal(isAuthRequired({ ok: false, error: 'NO_TASK' }), false);
+  assert.equal(isAuthRequired(null), false);
+  assert.equal(isAuthRequired(undefined), false);
 });

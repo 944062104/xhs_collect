@@ -31,6 +31,32 @@ const MAX_SEARCH_SCROLLS = 50;
 // 防封控：每次操作之间随机 2~5 秒停顿。
 const MIN_PAUSE_MS = 2000;
 const MAX_PAUSE_MS = 5000;
+// 瞬态错误重试：tabs.sendMessage 偶发失败（如 tab 尚未就绪 / 网络抖动）时重试。
+const MAX_RETRIES = 3;
+const RETRY_BACKOFF_MS = 500;
+// 永久错误（不重试）：选择器缺失、未登录拦截等应快速失败，避免无谓重试。
+const TRANSIENT_ERROR_PATTERNS = [
+  /TAB_NOT_READY/i,
+  /TIMED?[_]?OUT/i,
+  /NETWORK/i,
+  /CONNECTION/i,
+  /RATE[_]?LIMIT/i,
+];
+
+// 判断 content-script 返回的错误是否为「瞬态」（可重试）。
+function isTransientError(error) {
+  if (!error) return false;
+  return TRANSIENT_ERROR_PATTERNS.some((re) => re.test(String(error)));
+}
+
+// 未登录拦截错误：run/resume 的 catch 会据此把任务置为 failed 且标记 AUTH_REQUIRED（非 generic fatal）。
+export class AuthRequiredError extends Error {
+  constructor(taskId) {
+    super(`任务 ${taskId} 需要先在小红书网页端登录后才能采集（检测到登录弹窗）`);
+    this.name = 'AuthRequiredError';
+    this.code = 'AUTH_REQUIRED';
+  }
+}
 
 /**
  * 将 selectorKey（点路径，如 "search.feedsContainer"）解析为候选选择器数组。
@@ -129,19 +155,73 @@ export class Scraper {
     return this._tabId;
   }
 
-  // 向 content-script 发消息；ok===false 时抛错（交由上层容错处理）。
+  // 向 content-script 发消息；带瞬态错误重试。
+  // - tabs.sendMessage 抛错（tab 崩溃 / 连接中断等通信层错误）→ 视为瞬态，退避后重试。
+  // - 回复 {ok:false} 且 error 命中 TRANSIENT_ERROR_PATTERNS → 退避后重试。
+  // - 回复 {ok:false} 且为永久错误（如 SELECTOR_NOT_FOUND / AUTH_REQUIRED）→ 立即抛出，不重试。
   async _send(tabId, msg) {
-    const res = await this.tabs.sendMessage(tabId, msg);
-    if (!res || res.ok === false) {
-      throw new Error(`content script 返回错误: ${res?.error || 'NO_RESPONSE'} (action=${msg.action})`);
+    let lastErr;
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      let res;
+      try {
+        res = await this.tabs.sendMessage(tabId, msg);
+      } catch (err) {
+        // 通信层抛错（瞬态），记录后进入退避重试。
+        lastErr = err;
+        if (attempt < MAX_RETRIES) await this.sleep(RETRY_BACKOFF_MS);
+        continue;
+      }
+      if (res && res.ok === true) return res;
+      const error = res?.error || 'NO_RESPONSE';
+      if (!isTransientError(error)) {
+        // 永久错误：不重试，原样抛出。
+        const e = new Error(`content script 返回错误: ${error} (action=${msg.action})`);
+        e.permanent = true;
+        e.code = error;
+        throw e;
+      }
+      lastErr = new Error(`content script 返回错误: ${error} (action=${msg.action})`);
+      if (attempt < MAX_RETRIES) await this.sleep(RETRY_BACKOFF_MS);
     }
-    return res;
+    throw lastErr;
   }
 
-  // 防封控随机停顿：计算 2~5s 延迟，再 await 注入的 sleep。
-  async _randomPause() {
-    const delay = MIN_PAUSE_MS + Math.floor(Math.random() * (MAX_PAUSE_MS - MIN_PAUSE_MS + 1));
+  // 防封控随机停顿：默认 2~5s 随机；当任务显式配置 crawlDelay > 0 时改为该固定延迟（防封微调）。
+  async _randomPause(task) {
+    const crawlDelay = task?.config?.crawlDelay;
+    let delay;
+    if (typeof crawlDelay === 'number' && crawlDelay > 0) {
+      delay = crawlDelay; // 用户显式设定的固定延迟（毫秒）
+    } else {
+      delay = MIN_PAUSE_MS + Math.floor(Math.random() * (MAX_PAUSE_MS - MIN_PAUSE_MS + 1));
+    }
     await this.sleep(delay);
+  }
+
+  // 鉴权拦截检测：导航到搜索结果页后，检查是否存在登录弹窗（未登录墙）。
+  // 若 content script 报告登录弹窗存在（waitFor 命中登录选择器 → res.ok===true），抛出 AuthRequiredError。
+  // 注意：本方法直接调用 tabs.sendMessage（不走 _send 的「ok:false 即抛错」），以便区分「无弹窗(ok:false)」与真实错误。
+  async _detectAuth(task, tabId) {
+    const root = this._root();
+    const detectSelector = root?.patterns?.traps?.loginDialog?.detectSelector;
+    if (!detectSelector) return; // 无陷阱配置则跳过检测
+    let res;
+    try {
+      res = await this.tabs.sendMessage(tabId, {
+        action: 'waitFor',
+        selectors: String(detectSelector)
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean),
+        timeout: 3000,
+      });
+    } catch {
+      return; // 通信瞬态失败不阻断采集，仅跳过本次检测
+    }
+    if (res && res.ok === true) {
+      throw new AuthRequiredError(task.id);
+    }
+    // ok:false → 未出现登录弹窗，正常继续
   }
 
   // ---- 搜索阶段 ----------------------------------------------------------
@@ -149,6 +229,8 @@ export class Scraper {
   async _searchPhase(task) {
     const url = this._searchUrl(task.keyword);
     const tabId = await this._navigate(url);
+    // 鉴权拦截检测：导航到搜索结果页后，若命中登录弹窗立即中止（抛 AuthRequiredError）。
+    await this._detectAuth(task, tabId);
     await this._send(tabId, {
       action: 'waitFor',
       selectors: this._sel('search.feedsContainer'),
@@ -174,7 +256,7 @@ export class Scraper {
         noteUrls: task.progress.noteUrls,
         scrollCount: task.progress.scrollCount,
       });
-      await this._randomPause();
+      await this._randomPause(task);
     }
 
     task.progress.notesTotal = task.progress.noteUrls.length;
@@ -250,7 +332,7 @@ export class Scraper {
       } catch (closeErr) {
         console.warn(`closeModal 失败 (index=${i}):`, closeErr?.message ?? closeErr);
       }
-      await this._randomPause();
+      await this._randomPause(task);
     }
   }
 
@@ -271,6 +353,17 @@ export class Scraper {
       await this.taskManager.updateStatus(task, 'completed');
     } catch (err) {
       if (err && err.isCancellation) return; // 取消：保持 cancelled 状态，不记为失败
+      if (err && err.code === 'AUTH_REQUIRED') {
+        // 未登录拦截：标记 failed 且记录 AUTH_REQUIRED（区别于 generic fatal）。
+        task.errors.push({
+          code: 'AUTH_REQUIRED',
+          phase: task.progress.phase,
+          message: String(err?.message ?? err),
+          at: Date.now(),
+        });
+        await this.taskManager.updateStatus(task, 'failed');
+        return;
+      }
       task.errors.push({
         phase: task.progress.phase,
         fatal: true,
@@ -302,6 +395,18 @@ export class Scraper {
       await this.taskManager.updateStatus(task, 'completed');
     } catch (err) {
       if (err && err.isCancellation) return; // 取消：保持 cancelled 状态，不记为失败
+      if (err && err.code === 'AUTH_REQUIRED') {
+        // 未登录拦截：标记 failed 且记录 AUTH_REQUIRED（区别于 generic fatal）。
+        task.errors.push({
+          code: 'AUTH_REQUIRED',
+          phase: task.progress.phase,
+          resume: true,
+          message: String(err?.message ?? err),
+          at: Date.now(),
+        });
+        await this.taskManager.updateStatus(task, 'failed');
+        return;
+      }
       task.errors.push({
         phase: task.progress.phase,
         fatal: true,

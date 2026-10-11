@@ -61,6 +61,13 @@ function statusLabel(status) {
   return Object.prototype.hasOwnProperty.call(map, status) ? map[status] : status;
 }
 
+// 判断进度响应是否表示「未登录拦截」：后端在 task.errors 中写入 code:AUTH_REQUIRED。
+// 纯函数，便于测试；浏览器轮询与启动失败路径复用。
+function isAuthRequired(resp) {
+  if (!resp || !resp.ok) return false;
+  return Array.isArray(resp.errors) && resp.errors.some((e) => e && e.code === 'AUTH_REQUIRED');
+}
+
 // CSV 字段转义：数组/对象 → JSON 字符串；含逗号/引号/换行整体加引号；内部引号翻倍。
 function csvField(value) {
   if (value == null) return '';
@@ -200,6 +207,15 @@ function initPopup() {
       }
       const pct = progressToPercent(resp.progress);
       setProgress(pct, statusLabel(resp.status) + `（已采集 ${resp.notesCount ?? 0} 篇）`);
+
+      // 未登录拦截：明确提示登录，停止轮询（不再无限重试）。
+      if (isAuthRequired(resp)) {
+        stopPolling();
+        setRunningUI(false);
+        showError('请在小红书网页端登录后再采集');
+        return;
+      }
+
       if (['completed', 'failed', 'cancelled'].includes(resp.status)) {
         stopPolling();
         setRunningUI(false);
@@ -240,6 +256,8 @@ function initPopup() {
           els.apiKey.focus();
         } else if (resp.error === 'TASK_ALREADY_RUNNING') {
           showError('已有采集任务在进行中');
+        } else if (resp.error === 'AUTH_REQUIRED') {
+          showError('请在小红书网页端登录后再采集');
         } else {
           showError('启动失败：' + resp.error);
         }
@@ -356,5 +374,6 @@ if (typeof module !== 'undefined' && module.exports) {
     statusLabel,
     notesToCsv,
     notesToJson,
+    isAuthRequired,
   };
 }

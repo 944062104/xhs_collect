@@ -107,6 +107,7 @@ async function getProgress(msg, sendResponse) {
     status: task.status,
     progress: task.progress,
     notesCount: notes.length,
+    errors: task.errors || [],
   });
 }
 

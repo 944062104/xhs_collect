@@ -45,6 +45,14 @@ function makeTabs() {
     },
     sendMessage: async (tabId, msg) => {
       ops.messages.push(msg);
+      // 登录弹窗检测：命中 loginDialog 选择器时默认「无弹窗」(ok:false)，避免误触发 AuthRequiredError。
+      if (
+        msg.action === 'waitFor' &&
+        msg.selectors &&
+        msg.selectors.some((s) => String(s).includes('login-container'))
+      ) {
+        return { ok: false };
+      }
       switch (msg.action) {
         case 'waitFor':
         case 'scroll':
@@ -307,4 +315,71 @@ test('(f) 搜索阶段中断后 resume 会补完搜索，而非静默少采', as
   assert.equal(saved.progress.noteUrls.length, 3, 'resume 应补完搜索至 notesLimit=3（而不是沿用部分 1 条）');
   assert.equal(task.progress.notesCollected, 3, '三篇笔记都应被采集');
   assert.equal(task.status, 'completed');
+});
+
+// ---------------------------------------------------------------------------
+// (h) crawlDelay 微调：task.config.crawlDelay > 0 时 _randomPause 使用固定延迟
+// ---------------------------------------------------------------------------
+
+test('(h) crawlDelay > 0 时 _randomPause 睡眠固定 ms（而非随机 2-5s）', async () => {
+  const sleeps = [];
+  const { scraper } = makeScraper({ sleep: async (ms) => { sleeps.push(ms); } });
+  await scraper._randomPause({ config: { crawlDelay: 1000 } });
+  assert.equal(sleeps.length, 1, '应恰好调用一次 sleep');
+  assert.equal(sleeps[0], 1000, 'sleep 应收到固定 crawlDelay=1000ms');
+});
+
+test('(h2) crawlDelay 缺省/0 时 _randomPause 仍用随机 2-5s', async () => {
+  const sleeps = [];
+  const { scraper } = makeScraper({ sleep: async (ms) => { sleeps.push(ms); } });
+  await scraper._randomPause({ config: {} });
+  assert.equal(sleeps.length, 1);
+  assert.ok(sleeps[0] >= 2000 && sleeps[0] <= 5000, `随机延迟应在 2-5s 之间，实际 ${sleeps[0]}`);
+});
+
+// ---------------------------------------------------------------------------
+// (i) 瞬态错误重试：TAB_NOT_READY 等可重试；SELECTOR_NOT_FOUND 等永久错误快速失败
+// ---------------------------------------------------------------------------
+
+test('(i) _send 对瞬态错误（TAB_NOT_READY）重试直至成功', async () => {
+  let attempts = 0;
+  const tabs = {
+    sendMessage: async () => {
+      attempts += 1;
+      if (attempts <= 2) return { ok: false, error: 'TAB_NOT_READY' }; // 前 2 次瞬态失败
+      return { ok: true, data: 'ok' };
+    },
+  };
+  const { scraper } = makeScraper({ tabs, sleep: noSleep });
+  const res = await scraper._send(1, { action: 'scroll' });
+  assert.equal(attempts, 3, '2 次失败 + 1 次成功 = 共 3 次调用');
+  assert.equal(res.ok, true);
+});
+
+test('(i2) _send 对永久错误（SELECTOR_NOT_FOUND）立即失败，不重试', async () => {
+  let attempts = 0;
+  const tabs = {
+    sendMessage: async () => {
+      attempts += 1;
+      return { ok: false, error: 'SELECTOR_NOT_FOUND' };
+    },
+  };
+  const { scraper } = makeScraper({ tabs, sleep: noSleep });
+  await assert.rejects(() => scraper._send(1, { action: 'waitFor' }), /SELECTOR_NOT_FOUND/);
+  assert.equal(attempts, 1, '永久错误不应重试');
+});
+
+test('(i3) _send 对通信层抛错（瞬态）重试后成功', async () => {
+  let attempts = 0;
+  const tabs = {
+    sendMessage: async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error('tab crashed'); // 通信层抛错 = 瞬态
+      return { ok: true };
+    },
+  };
+  const { scraper } = makeScraper({ tabs, sleep: noSleep });
+  const res = await scraper._send(1, { action: 'getHTML' });
+  assert.equal(attempts, 2, '通信抛错应重试一次后成功');
+  assert.equal(res.ok, true);
 });
