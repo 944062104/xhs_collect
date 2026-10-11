@@ -144,7 +144,33 @@ input[type="checkbox"] {
   border: 1px solid var(--primary);
 }
 
-/* 进度区 */
+/* 按钮与按钮组 */
+.btn-group-main {
+  display: flex;
+  gap: 8px;
+}
+.btn-group-main #startBtn {
+  flex: 3;
+}
+.btn-group-main #cancelBtn {
+  flex: 1;
+}
+
+.btn-secondary-ghost {
+  background: transparent;
+  color: var(--primary);
+  border: 1px dashed var(--primary);
+  font-size: 12px;
+  padding: 8px;
+}
+
+.btn-small {
+  padding: 6px 10px;
+  font-size: 12px;
+  width: auto;
+}
+
+/* 进度与细节区 */
 .bar-track {
   width: 100%;
   height: 8px;
@@ -170,6 +196,17 @@ input[type="checkbox"] {
   color: var(--primary);
   font-weight: 600;
 }
+.step-detail {
+  margin-top: 6px;
+  font-size: 11px;
+  color: #4b5563;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 6px 8px;
+  line-height: 1.4;
+  word-break: break-all;
+}
 .error {
   margin-top: 8px;
   font-size: 12px;
@@ -177,6 +214,65 @@ input[type="checkbox"] {
   background: var(--track);
   border-radius: 8px;
   padding: 8px 10px;
+}
+
+/* 预览卡片 */
+.preview-card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 12px;
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.preview-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.preview-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #374151;
+}
+.preview-list {
+  max-height: 160px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-right: 4px;
+}
+.note-item {
+  background: #fafafa;
+  border: 1px solid #f0f0f0;
+  border-radius: 8px;
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.note-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: block;
+}
+.note-title:hover {
+  color: var(--primary);
+  text-decoration: underline;
+}
+.note-sub {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--muted);
 }
 
 /* 导出区 */
@@ -188,7 +284,43 @@ input[type="checkbox"] {
   flex: 1;
 }
 
-/* 高级抽屉 */
+/* 高级抽屉与测试行 */
+.test-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+}
+.test-row .btn {
+  background: #f3f4f6;
+  border: 1px solid #d1d5db;
+  color: #374151;
+}
+.test-row .btn:hover {
+  background: #e5e7eb;
+}
+.test-feedback {
+  font-size: 11px;
+  font-weight: 600;
+}
+.test-feedback.success {
+  color: #059669;
+}
+.test-feedback.fail {
+  color: #dc2626;
+}
+
+.config-status-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 12px;
+}
+.save-hint {
+  font-size: 11px;
+  color: #10b981;
+}
+
 .advanced {
   padding: 0;
   overflow: hidden;
@@ -220,12 +352,10 @@ input[type="checkbox"] {
   transition: max-height 0.3s ease, padding 0.3s ease;
 }
 .adv-panel.open {
-  max-height: 640px;
+  max-height: 720px;
   padding: 0 14px 14px;
 }
 .adv-panel > .field {
-  margin-top: 12px;
+  margin-top: 10px;
 }
-.adv-panel > .btn {
-  margin-top: 14px;
-}
+

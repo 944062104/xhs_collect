@@ -164,10 +164,15 @@ function initPopup() {
     limit: $('limit'),
     startBtn: $('startBtn'),
     cancelBtn: $('cancelBtn'),
+    newBtn: $('newBtn'),
     progressBar: $('progressBar'),
     progressText: $('progressText'),
     statusText: $('statusText'),
+    stepDetail: $('stepDetail'),
     errorBox: $('errorBox'),
+    previewSection: $('previewSection'),
+    previewCount: $('previewCount'),
+    previewList: $('previewList'),
     exportJsonBtn: $('exportJsonBtn'),
     exportCsvBtn: $('exportCsvBtn'),
     advancedToggle: $('advancedToggle'),
@@ -175,8 +180,11 @@ function initPopup() {
     apiBase: $('apiBase'),
     model: $('model'),
     apiKey: $('apiKey'),
+    testLlmBtn: $('testLlmBtn'),
+    testFeedback: $('testFeedback'),
     comments: $('comments'),
     delay: $('delay'),
+    saveHint: $('saveHint'),
     resetBtn: $('resetBtn'),
   };
 
@@ -185,15 +193,23 @@ function initPopup() {
   let crawlDelay = 0;
 
   // --- 配置持久化（chrome.storage.local） ---
+  function showSaveHint(text = '设置已保存') {
+    if (!els.saveHint) return;
+    els.saveHint.textContent = text;
+    setTimeout(() => {
+      if (els.saveHint) els.saveHint.textContent = '';
+    }, 2000);
+  }
+
   function loadConfig() {
     if (!chrome || !chrome.storage || !chrome.storage.local) return;
     chrome.storage.local.get(['apiBase', 'model', 'apiKey', 'comments', 'crawlDelay', 'limit'], (cfg) => {
       if (cfg.apiBase && els.apiBase) els.apiBase.value = cfg.apiBase;
       if (cfg.model && els.model) els.model.value = cfg.model;
-      if (cfg.apiKey) els.apiKey.value = cfg.apiKey;
-      if (typeof cfg.comments === 'boolean') els.comments.checked = cfg.comments;
-      if (typeof cfg.limit === 'number') els.limit.value = String(cfg.limit);
-      if (typeof cfg.crawlDelay === 'number') {
+      if (cfg.apiKey && els.apiKey) els.apiKey.value = cfg.apiKey;
+      if (typeof cfg.comments === 'boolean' && els.comments) els.comments.checked = cfg.comments;
+      if (typeof cfg.limit === 'number' && els.limit) els.limit.value = String(cfg.limit);
+      if (typeof cfg.crawlDelay === 'number' && els.delay) {
         crawlDelay = cfg.crawlDelay;
         els.delay.value = String(cfg.crawlDelay);
       }
@@ -202,23 +218,34 @@ function initPopup() {
 
   function saveConfig() {
     if (!chrome || !chrome.storage || !chrome.storage.local) return;
-    chrome.storage.local.set({
-      apiBase: els.apiBase ? els.apiBase.value.trim() : '',
-      model: els.model ? els.model.value.trim() : '',
-      apiKey: els.apiKey.value.trim(),
-      comments: els.comments.checked,
-      crawlDelay,
-      limit: Number(els.limit.value) || 20,
-    });
+    chrome.storage.local.set(
+      {
+        apiBase: els.apiBase ? els.apiBase.value.trim() : '',
+        model: els.model ? els.model.value.trim() : '',
+        apiKey: els.apiKey ? els.apiKey.value.trim() : '',
+        comments: els.comments ? els.comments.checked : false,
+        crawlDelay,
+        limit: els.limit ? Number(els.limit.value) || 20 : 20,
+      },
+      () => showSaveHint()
+    );
   }
 
-  // --- 进度条 / 状态刷新 ---
-  function setProgress(pct, label) {
+  // --- 进度条 / 状态 / 详情刷新 ---
+  function setProgress(pct, label, step) {
     const p = Math.max(0, Math.min(100, Number(pct) || 0));
     els.progressBar.style.width = p + '%';
     els.progressBar.setAttribute('aria-valuenow', String(p));
     els.progressText.textContent = p + '%';
     if (label != null) els.statusText.textContent = label;
+    if (els.stepDetail) {
+      if (step) {
+        els.stepDetail.textContent = step;
+        els.stepDetail.style.display = 'block';
+      } else {
+        els.stepDetail.style.display = 'none';
+      }
+    }
   }
 
   function showError(msg) {
@@ -226,11 +253,25 @@ function initPopup() {
     els.errorBox.style.display = msg ? 'block' : 'none';
   }
 
+  function renderPreviews(notes) {
+    if (!els.previewSection || !els.previewList) return;
+    if (!Array.isArray(notes) || notes.length === 0) {
+      els.previewSection.style.display = 'none';
+      return;
+    }
+    els.previewCount.textContent = notes.length;
+    els.previewList.innerHTML = notes.slice(0, 5).map(renderNotePreviewRow).join('');
+    els.previewSection.style.display = 'flex';
+  }
+
   function setRunningUI(running) {
     els.startBtn.disabled = running;
     els.cancelBtn.disabled = !running;
-    els.exportJsonBtn.disabled = running;
-    els.exportCsvBtn.disabled = running;
+    els.exportJsonBtn.disabled = running || !taskId;
+    els.exportCsvBtn.disabled = running || !taskId;
+    if (els.newBtn) {
+      els.newBtn.style.display = !running && taskId ? 'block' : 'none';
+    }
   }
 
   // --- 轮询进度 ---
@@ -252,14 +293,16 @@ function initPopup() {
           showError('与后台通信失败，请刷新页面重试');
         } else if (resp.error === 'NO_TASK') {
           showError('任务已不存在，请重新采集');
-          setProgress(0, '任务丢失');
+          setProgress(0, '任务丢失', null);
         } else {
           showError('采集异常：' + (resp.error || '未知错误'));
         }
         return;
       }
       const pct = progressToPercent(resp.progress);
-      setProgress(pct, statusLabel(resp.status) + `（已采集 ${resp.notesCount ?? 0} 篇）`);
+      const label = statusLabel(resp.status);
+      const step = resp.progress?.stepMessage || null;
+      setProgress(pct, label, step);
 
       // 未登录拦截：明确提示登录，停止轮询（不再无限重试）。
       if (isAuthRequired(resp)) {
@@ -272,6 +315,8 @@ function initPopup() {
       if (['completed', 'failed', 'cancelled'].includes(resp.status)) {
         stopPolling();
         setRunningUI(false);
+        // 完成后拉取预览
+        loadLatestTask();
       }
     });
   }
@@ -280,6 +325,31 @@ function initPopup() {
     stopPolling();
     pollOnce();
     pollTimer = setInterval(pollOnce, 1000);
+  }
+
+  // --- 任务恢复逻辑 ---
+  function loadLatestTask() {
+    if (!chrome || !chrome.runtime || !chrome.runtime.sendMessage) return;
+    chrome.runtime.sendMessage({ type: 'GET_LATEST_TASK' }, (resp) => {
+      if (chrome.runtime.lastError || !resp || !resp.ok || !resp.task) return;
+      const task = resp.task;
+      taskId = task.id;
+      if (task.keyword && !els.keyword.value) {
+        els.keyword.value = task.keyword;
+      }
+      const pct = progressToPercent(task.progress);
+      const label = statusLabel(task.status);
+      const step = task.progress?.stepMessage || null;
+      setProgress(pct, label, step);
+      renderPreviews(resp.notes);
+
+      if (task.status === 'running') {
+        setRunningUI(true);
+        startPolling();
+      } else {
+        setRunningUI(false);
+      }
+    });
   }
 
   // --- 开始采集 ---
@@ -304,11 +374,10 @@ function initPopup() {
         return;
       }
       if (!resp.ok) {
-        // 注意：未登录(AUTH_REQUIRED) 不会在 START 响应中返回，而是由 pollOnce 通过
-        // GET_PROGRESS 的 errors 在采集过程中检测并提示，故此处仅处理启动阶段的即时错误。
         if (resp.error === 'NO_API_KEY') {
           showError('缺少 Claude API Key，请在下方高级设置中填写');
           els.advancedPanel.classList.add('open');
+          els.advancedToggle.parentElement.classList.add('open');
           els.apiKey.focus();
         } else if (resp.error === 'TASK_ALREADY_RUNNING') {
           showError('已有采集任务在进行中');
@@ -319,7 +388,8 @@ function initPopup() {
       }
       taskId = resp.taskId;
       setRunningUI(true);
-      setProgress(0, '排队中');
+      setProgress(0, '排队中', '准备初始化浏览器环境...');
+      if (els.previewSection) els.previewSection.style.display = 'none';
       startPolling();
     });
   }
@@ -333,12 +403,53 @@ function initPopup() {
       }
       stopPolling();
       setRunningUI(false);
-      setProgress(0, '已取消');
+      setProgress(0, '已取消', null);
     });
   }
 
+  function onNewTask() {
+    chrome.runtime.sendMessage({ type: 'RESET_TASK' }, () => {
+      stopPolling();
+      taskId = null;
+      els.keyword.value = '';
+      showError('');
+      setProgress(0, '待命', null);
+      if (els.previewSection) els.previewSection.style.display = 'none';
+      setRunningUI(false);
+    });
+  }
+
+  // --- 测试 API 连接 ---
+  function onTestLlm() {
+    if (!els.testFeedback) return;
+    const key = els.apiKey ? els.apiKey.value.trim() : '';
+    const apiBase = els.apiBase ? els.apiBase.value.trim() : '';
+    const model = els.model ? els.model.value.trim() : '';
+    if (!key) {
+      els.testFeedback.className = 'test-feedback fail';
+      els.testFeedback.textContent = '请先填写 API Key';
+      return;
+    }
+    els.testFeedback.className = 'test-feedback';
+    els.testFeedback.textContent = '测试中...';
+    els.testLlmBtn.disabled = true;
+
+    chrome.runtime.sendMessage(
+      { type: 'TEST_LLM_CONFIG', apiKey: key, apiBase, model },
+      (resp) => {
+        els.testLlmBtn.disabled = false;
+        if (chrome.runtime.lastError || !resp || !resp.ok) {
+          els.testFeedback.className = 'test-feedback fail';
+          els.testFeedback.textContent = '连接失败: ' + (resp?.error || '通信异常');
+        } else {
+          els.testFeedback.className = 'test-feedback success';
+          els.testFeedback.textContent = '✓ 连接成功';
+        }
+      }
+    );
+  }
+
   // --- 导出：经由 SW 序列化后在本地下载（纯前端下载） ---
-  // Blob URL 兜底：当 chrome.downloads 不可用或下载报错时使用。
   function fallbackBlobDownload(filename, mime, text) {
     const blob = new Blob([text], { type: mime });
     const url = URL.createObjectURL(blob);
@@ -355,7 +466,6 @@ function initPopup() {
     if (chrome && chrome.downloads && chrome.downloads.download) {
       const dataUrl = 'data:' + mime + ';charset=utf-8,' + encodeURIComponent(text);
       chrome.downloads.download({ url: dataUrl, filename, saveAs: true }, () => {
-        // 下载失败（含 data: URL 策略拦截）时回退到 Blob 方式，避免静默失败。
         if (chrome.runtime.lastError) fallbackBlobDownload(filename, mime, text);
       });
       return;
@@ -381,18 +491,23 @@ function initPopup() {
   // --- 事件绑定 ---
   els.startBtn.addEventListener('click', onStart);
   els.cancelBtn.addEventListener('click', onCancel);
+  if (els.newBtn) els.newBtn.addEventListener('click', onNewTask);
   els.exportJsonBtn.addEventListener('click', () => onExport('json'));
   els.exportCsvBtn.addEventListener('click', () => onExport('csv'));
+  if (els.testLlmBtn) els.testLlmBtn.addEventListener('click', onTestLlm);
+
   if (els.apiBase) els.apiBase.addEventListener('change', saveConfig);
   if (els.model) els.model.addEventListener('change', saveConfig);
-  els.apiKey.addEventListener('change', saveConfig);
-  els.comments.addEventListener('change', saveConfig);
-  els.limit.addEventListener('change', saveConfig);
+  if (els.apiKey) els.apiKey.addEventListener('change', saveConfig);
+  if (els.comments) els.comments.addEventListener('change', saveConfig);
+  if (els.limit) els.limit.addEventListener('change', saveConfig);
 
-  els.delay.addEventListener('change', () => {
-    crawlDelay = Number(els.delay.value) || 0;
-    saveConfig();
-  });
+  if (els.delay) {
+    els.delay.addEventListener('change', () => {
+      crawlDelay = Number(els.delay.value) || 0;
+      saveConfig();
+    });
+  }
 
   // 高级抽屉折叠
   els.advancedToggle.addEventListener('click', () => {
@@ -408,15 +523,16 @@ function initPopup() {
       chrome.storage.local.remove(['apiBase', 'model', 'apiKey', 'comments', 'crawlDelay', 'limit'], () => {
         if (els.apiBase) els.apiBase.value = '';
         if (els.model) els.model.value = '';
-        els.apiKey.value = '';
-        els.comments.checked = false;
-        els.delay.value = '0';
-        showError('经验库已重置');
+        if (els.apiKey) els.apiKey.value = '';
+        if (els.comments) els.comments.checked = false;
+        if (els.delay) els.delay.value = '0';
+        showSaveHint('本地配置已重置');
       });
     }
   });
 
   loadConfig();
+  loadLatestTask();
 }
 
 // 浏览器中：DOM 就绪后接线。

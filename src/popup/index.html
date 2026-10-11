@@ -30,8 +30,11 @@
         </select>
       </label>
 
-      <button id="startBtn" class="btn btn-primary">开始一键采集</button>
-      <button id="cancelBtn" class="btn btn-ghost" disabled>取消采集</button>
+      <div class="btn-group-main">
+        <button id="startBtn" class="btn btn-primary">开始一键采集</button>
+        <button id="cancelBtn" class="btn btn-ghost" disabled>取消</button>
+      </div>
+      <button id="newBtn" class="btn btn-secondary-ghost" style="display:none">新建采集 / 清空当前</button>
     </section>
 
     <!-- 进度区 -->
@@ -43,19 +46,28 @@
         <span id="progressText">0%</span>
         <span id="statusText" class="status">待命</span>
       </div>
+      <div id="stepDetail" class="step-detail" style="display:none"></div>
       <div id="errorBox" class="error" style="display:none"></div>
+    </section>
+
+    <!-- 预览与导出卡片 -->
+    <section id="previewSection" class="preview-card" style="display:none">
+      <div class="preview-header">
+        <span class="preview-title">最近采集预览 (<span id="previewCount">0</span> 篇)</span>
+      </div>
+      <div id="previewList" class="preview-list"></div>
     </section>
 
     <!-- 导出区 -->
     <section class="export">
-      <button id="exportJsonBtn" class="btn btn-outline">导出 JSON</button>
-      <button id="exportCsvBtn" class="btn btn-outline">导出 CSV</button>
+      <button id="exportJsonBtn" class="btn btn-outline" disabled>导出 JSON</button>
+      <button id="exportCsvBtn" class="btn btn-outline" disabled>导出 CSV</button>
     </section>
 
     <!-- 高级抽屉（折叠） -->
     <section class="advanced">
       <button id="advancedToggle" class="adv-toggle" aria-expanded="false">
-        <span>高级设置</span>
+        <span>高级设置 (API 与延迟)</span>
         <span class="chevron">▸</span>
       </button>
       <div id="advancedPanel" class="adv-panel">
@@ -74,6 +86,11 @@
           <input id="apiKey" type="password" placeholder="sk-ant-..." />
         </label>
 
+        <div class="test-row">
+          <button id="testLlmBtn" class="btn btn-small">测试 API 连接</button>
+          <span id="testFeedback" class="test-feedback"></span>
+        </div>
+
         <label class="field field-row">
           <span>采集评论</span>
           <input id="comments" type="checkbox" />
@@ -82,14 +99,17 @@
         <label class="field">
           <span>爬取延迟</span>
           <select id="delay">
-            <option value="0">无延迟</option>
-            <option value="500">0.5 秒</option>
-            <option value="1000">1 秒</option>
-            <option value="2000">2 秒</option>
+            <option value="0">无延迟（随机2~5秒防封）</option>
+            <option value="500">固定 0.5 秒</option>
+            <option value="1000">固定 1 秒</option>
+            <option value="2000">固定 2 秒</option>
           </select>
         </label>
 
-        <button id="resetBtn" class="btn btn-ghost danger">经验库重置</button>
+        <div class="config-status-row">
+          <span id="saveHint" class="save-hint"></span>
+          <button id="resetBtn" class="btn btn-ghost danger btn-small">清空本地配置</button>
+        </div>
       </div>
     </section>
   </main>
