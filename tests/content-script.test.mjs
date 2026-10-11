@@ -678,6 +678,40 @@ test('onMessage setSearchSort：浮层未展开时绝不误判全局文本为排
   assert.equal(realFilterClicked, true, '应先点击展开筛选按钮');
 });
 
+test('onMessage verifySelectors：测试候选选择器并返回匹配计数与文本样本', async () => {
+  resetDoc();
+
+  const titleEl = makeElement('h1', { textContent: '夏天清爽穿搭灵感指南' });
+  const card1 = makeElement('div', { className: 'note-card' });
+  const card2 = makeElement('div', { className: 'note-card' });
+
+  docState.cssMatches['h1.title'] = titleEl;
+  docState.allMatches = {
+    '.note-card': [card1, card2],
+    'h1.title': [titleEl],
+    '.invalid-selector': [],
+  };
+
+  const { response } = dispatch({
+    action: 'verifySelectors',
+    candidates: {
+      'noteDetail.title': ['h1.title', '.backup-title'],
+      'search.noteCard': ['.note-card'],
+      'search.emptyField': ['.invalid-selector'],
+    },
+  });
+
+  const resp = await response;
+  assert.equal(resp.ok, true);
+  assert.ok(resp.results);
+  assert.equal(resp.results['noteDetail.title'].valid, true);
+  assert.equal(resp.results['noteDetail.title'].matchCount, 1);
+  assert.equal(resp.results['noteDetail.title'].sampleText, '夏天清爽穿搭灵感指南');
+  assert.equal(resp.results['search.noteCard'].matchCount, 2);
+  assert.equal(resp.results['search.emptyField'].valid, false);
+  assert.equal(resp.results['search.emptyField'].matchCount, 0);
+});
+
 
 
 

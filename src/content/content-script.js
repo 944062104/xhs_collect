@@ -238,12 +238,87 @@ function handleScroll(msg, sendResponse) {
 
 // getHTML：返回元素 outerHTML。
 function handleGetHTML(msg, sendResponse) {
+  if (msg.expandFilter && typeof findFilterToggleBtn === 'function') {
+    try {
+      var filterBtn = findFilterToggleBtn();
+      if (filterBtn) triggerMouseClick(filterBtn);
+    } catch (_) {}
+  }
   var el = findFirstElement(resolveSelectors(msg));
   if (!el) {
     sendResponse({ ok: false, error: 'SELECTOR_NOT_FOUND' });
     return false;
   }
   sendResponse({ ok: true, data: el.outerHTML != null ? el.outerHTML : '' });
+  return false;
+}
+
+// handleVerifySelectors：在当前 DOM 中沙箱回测候选规则并采集匹配数与样本
+function handleVerifySelectors(msg, sendResponse) {
+  var candidates = msg.candidates || {};
+  var results = {};
+
+  for (var key in candidates) {
+    if (!Object.prototype.hasOwnProperty.call(candidates, key)) continue;
+    var list = Array.isArray(candidates[key]) ? candidates[key] : [candidates[key]];
+    var bestCount = 0;
+    var bestSel = '';
+    var sample = '';
+
+    for (var i = 0; i < list.length; i++) {
+      var sel = String(list[i]);
+      var count = 0;
+      var firstNode = null;
+
+      // 1) 优先尝试 querySelectorAll
+      try {
+        if (typeof document.querySelectorAll === 'function') {
+          var nodes = document.querySelectorAll(sel);
+          if (nodes && nodes.length > 0) {
+            count = nodes.length;
+            firstNode = nodes[0];
+          }
+        }
+      } catch (_) {}
+
+      // 2) 若失败，尝试 XPath
+      if (count === 0) {
+        try {
+          if (typeof document.evaluate === 'function') {
+            var xres = document.evaluate(sel, document, null, XPATH_SNAPSHOT, null);
+            if (xres && xres.snapshotLength > 0) {
+              count = xres.snapshotLength;
+              firstNode = xres.snapshotItem(0);
+            }
+          }
+        } catch (_) {}
+      }
+
+      // 3) trySelect 兜底
+      if (count === 0) {
+        var fallbackNode = trySelect(sel);
+        if (fallbackNode) {
+          count = 1;
+          firstNode = fallbackNode;
+        }
+      }
+
+      if (count > bestCount) {
+        bestCount = count;
+        bestSel = sel;
+        sample = firstNode ? (firstNode.textContent || '').trim().slice(0, 30) : '';
+      }
+    }
+
+    results[key] = {
+      selector: bestSel || (list[0] ? String(list[0]) : ''),
+      matchCount: bestCount,
+      sampleText: sample,
+      valid: bestCount > 0,
+    };
+  }
+
+  sendResponse({ ok: true, results: results });
   return false;
 }
 
@@ -866,6 +941,8 @@ if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage)
         return handleEval(message, sendResponse);
       case 'setSearchSort':
         return handleSetSearchSort(message, sendResponse);
+      case 'verifySelectors':
+        return handleVerifySelectors(message, sendResponse);
       default:
         sendResponse({ ok: false, error: 'UNKNOWN_ACTION' });
         return false;
@@ -882,6 +959,7 @@ if (typeof module !== 'undefined' && module.exports) {
     handleGetNoteDetail: handleGetNoteDetail,
     handleGetComments: handleGetComments,
     handleSetSearchSort: handleSetSearchSort,
+    handleVerifySelectors: handleVerifySelectors,
   };
 }
 
