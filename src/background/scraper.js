@@ -155,6 +155,18 @@ export class Scraper {
     return this._tabId;
   }
 
+  // 任务终态时安全关闭后台创建的标签页，保持用户浏览器整洁。
+  async _cleanupTab() {
+    if (this._tabId != null && typeof this.tabs?.remove === 'function') {
+      try {
+        await this.tabs.remove(this._tabId);
+      } catch (_) {
+        // 忽略标签页已被用户手动提前关闭的异常
+      }
+      this._tabId = null;
+    }
+  }
+
   // 向 content-script 发消息；带瞬态错误重试。
   // - tabs.sendMessage 抛错（tab 崩溃 / 连接中断等通信层错误）→ 视为瞬态，退避后重试。
   // - 回复 {ok:false} 且 error 命中 TRANSIENT_ERROR_PATTERNS → 退避后重试。
@@ -369,6 +381,7 @@ export class Scraper {
       await this.taskManager.updateStatus(task, 'failed');
     } finally {
       this._cancelled.delete(task.id); // 释放取消标志，避免长生命周期 SW 中集合无限增长
+      await this._cleanupTab();
     }
   }
 
@@ -413,6 +426,7 @@ export class Scraper {
       await this.taskManager.updateStatus(task, 'failed');
     } finally {
       this._cancelled.delete(task.id); // 释放取消标志，避免长生命周期 SW 中集合无限增长
+      await this._cleanupTab();
     }
   }
 

@@ -32,7 +32,7 @@ function makeLlm({ noteUrls = [], failDetailCall = null } = {}) {
 }
 
 function makeTabs() {
-  const ops = { created: [], updated: [], messages: [] };
+  const ops = { created: [], updated: [], removed: [], messages: [] };
   return {
     ops,
     create: async ({ url }) => {
@@ -42,6 +42,9 @@ function makeTabs() {
     update: async (id, { url }) => {
       ops.updated.push(url);
       return { id };
+    },
+    remove: async (id) => {
+      ops.removed.push(id);
     },
     sendMessage: async (tabId, msg) => {
       ops.messages.push(msg);
@@ -415,4 +418,41 @@ test('(j) 详情采集采用独立 URL 导航时，不再发送多余的 closeMo
 
   assert.equal(sentActions.includes('closeModal'), false, '直接 URL 导航不应发送 closeModal');
 });
+
+test('(k) 任务完成 (completed) 后自动关闭后台标签页并释放 _tabId', async () => {
+  const tabs = makeTabs();
+  const llm = makeLlm({ noteUrls: [{ url: 'https://xhs.com/explore/1', title: 't', author: 'a', likes: 1, type: '图文' }] });
+  const { scraper, storage } = makeScraper({ tabs, llm });
+
+  const task = baseTask('task_k', { config: { notesLimit: 1 } });
+  await storage.saveTask(task);
+  await scraper.run(task);
+
+  assert.equal(task.status, 'completed');
+  assert.deepEqual(tabs.ops.removed, [1], '采集完成后应调用 tabs.remove 关闭创建的标签页');
+  assert.equal(scraper._tabId, null, 'scraper._tabId 应被重置为 null');
+});
+
+test('(l) 任务失败 (failed) 时依然在 finally 块中关闭标签页', async () => {
+  const tabs = makeTabs();
+  const llm = makeLlm({ failDetailCall: 1, noteUrls: [{ url: 'https://xhs.com/explore/1', title: 't' }] });
+  const { scraper, storage } = makeScraper({ tabs, llm });
+
+  // 模拟搜索阶段抛错（如 feedsContainer 超时）
+  tabs.sendMessage = async (id, msg) => {
+    if (msg.action === 'waitFor' && msg.selectors?.[0]?.includes('feeds-page')) {
+      return { ok: false, error: 'SELECTOR_NOT_FOUND' };
+    }
+    return { ok: true };
+  };
+
+  const task = baseTask('task_l');
+  await storage.saveTask(task);
+  await scraper.run(task);
+
+  assert.equal(task.status, 'failed');
+  assert.deepEqual(tabs.ops.removed, [1], '任务失败时也应安全关闭创建的标签页');
+  assert.equal(scraper._tabId, null);
+});
+
 
