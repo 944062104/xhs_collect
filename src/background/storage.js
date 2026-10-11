@@ -94,6 +94,14 @@ export class StorageManager {
     return list && list.length > 0 ? list[0] : null;
   }
 
+  // 返回最新创建的任务（按 createdAt 降序），没有则返回 null。
+  async getLatestTask() {
+    const list = await this._withStore(STORE_TASKS, 'readonly', (store) => store.getAll());
+    if (!list || list.length === 0) return null;
+    list.sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0));
+    return list[0];
+  }
+
   async updateTaskProgress(id, progress) {
     const task = await this.getTask(id);
     if (!task) throw new Error(`updateTaskProgress: task ${id} not found`);
@@ -109,6 +117,14 @@ export class StorageManager {
 
   async getNotesByTaskId(taskId) {
     return this._withStore(STORE_NOTES, 'readonly', (store) => store.index('taskId').getAll(taskId));
+  }
+
+  // 获取最近采集的笔记（按 collectedAt 降序），默认最多 limit 条
+  async getRecentNotes(limit = 10) {
+    const list = await this._withStore(STORE_NOTES, 'readonly', (store) => store.getAll());
+    if (!list || list.length === 0) return [];
+    list.sort((a, b) => (Number(b.collectedAt) || 0) - (Number(a.collectedAt) || 0));
+    return list.slice(0, limit);
   }
 
   // ---- Config ----

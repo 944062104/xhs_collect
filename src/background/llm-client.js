@@ -304,4 +304,15 @@ export class LLMClient {
       publishedAt: it?.publishedAt ?? '',
     }));
   }
+
+  // 测试连接：发送轻量请求验证 API Key / URL / 模型可用性
+  async testConnection() {
+    try {
+      const text = await this._callApi('You are a ping tester.', 'Hello, reply with "OK".');
+      return { ok: Boolean(text && text.length > 0) };
+    } catch (err) {
+      return { ok: false, error: err?.message || '连接失败' };
+    }
+  }
 }
+

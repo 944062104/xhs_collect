@@ -113,3 +113,25 @@ test('getConfig 对未设置的 key 返回 undefined', async () => {
   const sm = makeManager();
   assert.equal(await sm.getConfig('missing'), undefined);
 });
+
+test('getLatestTask 返回最新创建的任务，若无任务返回 null', async () => {
+  const sm = makeManager();
+  assert.equal(await sm.getLatestTask(), null);
+  await sm.saveTask({ id: 't1', createdAt: 100, status: 'completed' });
+  await sm.saveTask({ id: 't2', createdAt: 200, status: 'completed' });
+  await sm.saveTask({ id: 't0', createdAt: 50, status: 'completed' });
+  const latest = await sm.getLatestTask();
+  assert.equal(latest.id, 't2');
+});
+
+test('getRecentNotes 按 collectedAt 倒序返回指定条数笔记', async () => {
+  const sm = makeManager();
+  await sm.saveNote({ id: 'n1', taskId: 't1', collectedAt: 10, title: 'Note 1' });
+  await sm.saveNote({ id: 'n2', taskId: 't1', collectedAt: 20, title: 'Note 2' });
+  await sm.saveNote({ id: 'n3', taskId: 't1', collectedAt: 30, title: 'Note 3' });
+  const notes = await sm.getRecentNotes(2);
+  assert.equal(notes.length, 2);
+  assert.equal(notes[0].id, 'n3');
+  assert.equal(notes[1].id, 'n2');
+});
+

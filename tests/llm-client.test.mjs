@@ -329,3 +329,33 @@ test('content 中首个文本块（type==="text"）被选中，忽略非文本�
     restoreFetch();
   }
 });
+
+test('testConnection：API 正常响应时返回 ok: true', async () => {
+  installFetch(() =>
+    jsonResponse({
+      content: [{ type: 'text', text: 'OK' }],
+    })
+  );
+  try {
+    const client = new LLMClient('sk-test');
+    const res = await client.testConnection();
+    assert.deepEqual(res, { ok: true });
+  } finally {
+    restoreFetch();
+  }
+});
+
+test('testConnection：API 抛错时返回 ok: false 与错误说明', async () => {
+  installFetch(() => {
+    throw new Error('Connection refused');
+  });
+  try {
+    const client = new LLMClient('sk-test');
+    const res = await client.testConnection();
+    assert.equal(res.ok, false);
+    assert.match(res.error, /Connection refused/i);
+  } finally {
+    restoreFetch();
+  }
+});
+
