@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "基于关键词自动采集小红书笔记与评论并导出 JSON/CSV 的 Chrome MV3 扩展",
   "private": true,
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "test": "node --test"
   }
