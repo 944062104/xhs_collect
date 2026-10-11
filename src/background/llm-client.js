@@ -1,0 +1,259 @@
+// LLMClient — 将小红书网页 HTML 片段结构化为可用数据的模块。
+//
+// 设计约定（与仓库其它 background 模块一致）：
+// - 本文件为 ES module（manifest 中 background.type === "module"）。
+// - 使用浏览器 Service Worker / Node 22 原生提供的全局 fetch，不引入任何 HTTP 依赖。
+// - 不做缓存、不做流式；每个方法 = 清洗 HTML + 调一次 API + 解析/轻量校验。
+//
+// 对外 API：
+//   new LLMClient(apiKey, model = 'claude-3-5-sonnet-latest')
+//   extractNoteList(htmlSnippet)   -> Array<{title,url,author,likes,type}>
+//   extractNoteDetail(htmlSnippet) -> {title,content,author,likes,tags,images}
+//   extractComments(htmlSnippet)   -> Array<{author,text,likes,publishedAt}>
+
+const API_URL = 'https://api.anthropic.com/v1/messages';
+const DEFAULT_MODEL = 'claude-3-5-sonnet-latest';
+const MAX_TOKENS = 4096;
+
+// ----------------------------------------------------------------------------
+// HTML 预清洗：去除 <script>/<style>/<svg> 块与 data: URI，降低 token 成本并提升鲁棒性。
+// ----------------------------------------------------------------------------
+export function cleanHtml(html) {
+  if (typeof html !== 'string') return '';
+  return html
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<svg\b[^>]*>[\s\S]*?<\/svg>/gi, ' ')
+    .replace(/data:[^"')\s]+/gi, ' ') // 去除 data: URI（如 base64 内联资源）
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// ----------------------------------------------------------------------------
+// JSON 容错解析
+// ----------------------------------------------------------------------------
+
+// 去除 ```json / ``` 代码围栏。
+function stripFences(s) {
+  return s
+    .replace(/```json\s*/gi, '')
+    .replace(/```\s*/g, '')
+    .trim();
+}
+
+// 在文本中找到最外层平衡的 {..} 或 [..] 片段（尊重字符串与转义）。
+// 从指定开括号位置 start 开始扫描，匹配对应的闭合括号。
+function extractBracketSpan(text, open, close, start) {
+  let depth = 0;
+  let inStr = false;
+  let escaped = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (inStr) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') {
+      inStr = true;
+    } else if (ch === open) {
+      depth++;
+    } else if (ch === close) {
+      depth--;
+      if (depth === 0) return text.slice(start, i + 1);
+    }
+  }
+  return null;
+}
+
+// 选择文本中【最早出现】的开括号作为最外层容器（数组/对象的首括号一定先于内部元素），
+// 避免误把数组内第一个对象的 {} 当成整体返回。
+function extractBalancedSpan(text) {
+  const iBrace = text.indexOf('{');
+  const iBracket = text.indexOf('[');
+  if (iBrace === -1 && iBracket === -1) return null;
+  if (iBrace === -1) return extractBracketSpan(text, '[', ']', iBracket);
+  if (iBracket === -1) return extractBracketSpan(text, '{', '}', iBrace);
+  if (iBracket < iBrace) return extractBracketSpan(text, '[', ']', iBracket);
+  return extractBracketSpan(text, '{', '}', iBrace);
+}
+
+// 去除尾随逗号（}, ] 之前的逗号），作为 JSON 修复的最后兜底。
+function removeTrailingCommas(s) {
+  return s.replace(/,(\s*[}\]])/g, '$1');
+}
+
+function tryParse(s) {
+  try {
+    return JSON.parse(s);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * 从模型输出中尽可能稳健地解析出 JSON。
+ * 处理顺序：直接解析 -> 去除代码围栏 -> 平衡括号提取 -> 去除尾随逗号修复。
+ * 若最终仍无法解析，抛出带上下文的明确错误。
+ */
+export function extractJson(text) {
+  if (typeof text !== 'string') {
+    throw new Error(`extractJson 需要字符串输入，收到 ${typeof text}`);
+  }
+  const stripped = stripFences(text);
+  let candidate = tryParse(stripped);
+  if (candidate !== undefined) return candidate;
+
+  const span = extractBalancedSpan(stripped);
+  if (span) {
+    candidate = tryParse(span) ?? tryParse(removeTrailingCommas(span));
+    if (candidate !== undefined) return candidate;
+  }
+
+  candidate = tryParse(removeTrailingCommas(stripped));
+  if (candidate !== undefined) return candidate;
+
+  throw new Error(
+    `无法从模型输出中解析出 JSON（已尝试去除代码围栏 / 平衡括号提取 / 去除尾随逗号）。原始片段：${text.slice(0, 200)}`
+  );
+}
+
+// ----------------------------------------------------------------------------
+// System Prompt 与字段说明（每个方法独立，聚焦单一任务）
+// ----------------------------------------------------------------------------
+
+const SYSTEM_NOTE_LIST = `你是一个小红书网页数据提取器。用户会提供一段网页 HTML 片段（已去除脚本与样式），请从中提取笔记列表。
+只输出 JSON 数组，每个元素包含字段：
+- title：笔记标题（字符串）
+- url：笔记链接（字符串，尽量保留相对或绝对路径）
+- author：作者昵称（字符串）
+- likes：点赞数（数字或字符串）
+- type：类型（如 "图文" 或 "视频"）
+不要输出代码围栏或任何解释文字，只输出可被 JSON.parse 解析的纯 JSON。`;
+
+const SYSTEM_NOTE_DETAIL = `你是一个小红书网页数据提取器。用户会提供一段单篇笔记详情页的 HTML 片段（已去除脚本与样式），请提取该笔记的结构化信息。
+只输出 JSON 对象，包含字段：
+- title：标题
+- content：正文内容
+- author：作者昵称
+- likes：点赞数（数字或字符串）
+- tags：标签数组（字符串数组）
+- images：图片链接数组（字符串数组）
+不要输出代码围栏或任何解释文字，只输出可被 JSON.parse 解析的纯 JSON。`;
+
+const SYSTEM_NOTE_COMMENTS = `你是一个小红书网页数据提取器。用户会提供一段笔记评论区的 HTML 片段（已去除脚本与样式），请提取评论列表。
+只输出 JSON 数组，每个元素包含字段：
+- author：评论者昵称
+- text：评论内容
+- likes：点赞数（数字或字符串）
+- publishedAt：发布时间（字符串，尽量保留原文）
+不要输出代码围栏或任何解释文字，只输出可被 JSON.parse 解析的纯 JSON。`;
+
+const STRICT_RETRY_NOTE = '\n\n【重试】严格要求：仅输出纯 JSON，禁止使用代码围栏、不要添加任何解释文字。';
+
+// ----------------------------------------------------------------------------
+// LLMClient
+// ----------------------------------------------------------------------------
+
+export class LLMClient {
+  constructor(apiKey, model = DEFAULT_MODEL) {
+    if (!apiKey || typeof apiKey !== 'string') {
+      throw new Error('LLMClient 需要一个非空的 apiKey');
+    }
+    this.apiKey = apiKey;
+    this.model = model;
+  }
+
+  // 调用 Claude Messages API，返回模型输出的文本字符串。
+  async _callApi(systemPrompt, userPrompt) {
+    const res = await fetch(API_URL, {
+      method: 'POST',
+      headers: {
+        'x-api-key': this.apiKey,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: this.model,
+        max_tokens: MAX_TOKENS,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: userPrompt }],
+      }),
+    });
+
+    if (!res.ok) {
+      throw new Error(`Claude API 请求失败：HTTP ${res.status}`);
+    }
+
+    const data = await res.json();
+    const text = data?.content?.[0]?.text;
+    if (typeof text !== 'string') {
+      throw new Error('Claude API 返回格式异常：缺少 content[0].text');
+    }
+    return text;
+  }
+
+  // 调 API + 解析 JSON；解析失败时以更严格的系统提示重试一次。
+  async _extract(systemPrompt, userPrompt) {
+    try {
+      const text = await this._callApi(systemPrompt, userPrompt);
+      return extractJson(text);
+    } catch (err) {
+      const strictText = await this._callApi(systemPrompt + STRICT_RETRY_NOTE, userPrompt);
+      return extractJson(strictText);
+    }
+  }
+
+  _buildPrompt(instruction, cleanedHtml) {
+    return `${instruction}\n\n以下是网页 HTML 片段：\n"""\n${cleanedHtml}\n"""`;
+  }
+
+  async extractNoteList(htmlSnippet) {
+    const cleaned = cleanHtml(htmlSnippet);
+    const prompt = this._buildPrompt('请提取该页面中的笔记列表。', cleaned);
+    const data = await this._extract(SYSTEM_NOTE_LIST, prompt);
+    if (!Array.isArray(data)) {
+      throw new Error('extractNoteList 预期返回数组');
+    }
+    return data.map((it) => ({
+      title: it?.title ?? '',
+      url: it?.url ?? '',
+      author: it?.author ?? '',
+      likes: it?.likes ?? 0,
+      type: it?.type ?? '',
+    }));
+  }
+
+  async extractNoteDetail(htmlSnippet) {
+    const cleaned = cleanHtml(htmlSnippet);
+    const prompt = this._buildPrompt('请提取该笔记的详情信息。', cleaned);
+    const data = await this._extract(SYSTEM_NOTE_DETAIL, prompt);
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+      throw new Error('extractNoteDetail 预期返回对象');
+    }
+    return {
+      title: data.title ?? '',
+      content: data.content ?? '',
+      author: data.author ?? '',
+      likes: data.likes ?? 0,
+      tags: Array.isArray(data.tags) ? data.tags : [],
+      images: Array.isArray(data.images) ? data.images : [],
+    };
+  }
+
+  async extractComments(htmlSnippet) {
+    const cleaned = cleanHtml(htmlSnippet);
+    const prompt = this._buildPrompt('请提取该页面的评论列表。', cleaned);
+    const data = await this._extract(SYSTEM_NOTE_COMMENTS, prompt);
+    if (!Array.isArray(data)) {
+      throw new Error('extractComments 预期返回数组');
+    }
+    return data.map((it) => ({
+      author: it?.author ?? '',
+      text: it?.text ?? '',
+      likes: it?.likes ?? 0,
+      publishedAt: it?.publishedAt ?? '',
+    }));
+  }
+}
