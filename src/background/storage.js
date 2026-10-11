@@ -47,33 +47,34 @@ export class StorageManager {
     });
   }
 
-  // 在指定 store 上执行事务，fn 接收 store，其返回值（或 Promise）作为结果。
-  async _withStore(storeName, mode, fn) {
-    const db = await this.open();
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(storeName, mode);
-      const store = tx.objectStore(storeName);
-      let result;
-      Promise.resolve()
-        .then(() => fn(store))
-        .then((r) => {
-          result = r;
+  // 在指定 store 上执行事务。fn(store) 须【同步】发出 IDBRequest 并返回它，
+  // 切勿在 fn 内用 Promise.then / await 延后请求——否则真实 Chrome 中事务会因
+  // 控制权返回事件循环而被自动关闭，报 "transaction is not active"。
+  _withStore(storeName, mode, fn) {
+    return this.open().then(
+      (db) =>
+        new Promise((resolve, reject) => {
+          const tx = db.transaction(storeName, mode);
+          const store = tx.objectStore(storeName);
+          let result;
+          let request;
+          try {
+            request = fn(store); // 同步发出请求
+          } catch (err) {
+            reject(err);
+            return;
+          }
+          if (request) {
+            request.onsuccess = () => {
+              result = request.result;
+            };
+            request.onerror = () => reject(request.error);
+          }
+          tx.oncomplete = () => resolve(result);
+          tx.onerror = () => reject(tx.error);
+          tx.onabort = () => reject(tx.error || new Error('transaction aborted'));
         })
-        .catch((err) => {
-          try { tx.abort(); } catch { /* noop */ }
-          reject(err);
-        });
-      tx.oncomplete = () => resolve(result);
-      tx.onerror = () => reject(tx.error);
-      tx.onabort = () => reject(tx.error || new Error('transaction aborted'));
-    });
-  }
-
-  static _reqToPromise(request) {
-    return new Promise((resolve, reject) => {
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error);
-    });
+    );
   }
 
   // ---- Tasks ----
@@ -83,17 +84,13 @@ export class StorageManager {
   }
 
   async getTask(id) {
-    const rec = await this._withStore(STORE_TASKS, 'readonly', (store) => StorageManager._reqToPromise(store.get(id)));
+    const rec = await this._withStore(STORE_TASKS, 'readonly', (store) => store.get(id));
     return rec || null;
   }
 
   // 返回当前 status === 'running' 的任务，没有则返回 null（取第一条）。
   async getRunningTask() {
-    const list = await this._withStore(
-      STORE_TASKS,
-      'readonly',
-      (store) => StorageManager._reqToPromise(store.index('status').getAll('running'))
-    );
+    const list = await this._withStore(STORE_TASKS, 'readonly', (store) => store.index('status').getAll('running'));
     return list && list.length > 0 ? list[0] : null;
   }
 
@@ -111,11 +108,7 @@ export class StorageManager {
   }
 
   async getNotesByTaskId(taskId) {
-    return this._withStore(
-      STORE_NOTES,
-      'readonly',
-      (store) => StorageManager._reqToPromise(store.index('taskId').getAll(taskId))
-    );
+    return this._withStore(STORE_NOTES, 'readonly', (store) => store.index('taskId').getAll(taskId));
   }
 
   // ---- Config ----
@@ -125,11 +118,7 @@ export class StorageManager {
   }
 
   async getConfig(key) {
-    const rec = await this._withStore(
-      STORE_CONFIG,
-      'readonly',
-      (store) => StorageManager._reqToPromise(store.get(key))
-    );
+    const rec = await this._withStore(STORE_CONFIG, 'readonly', (store) => store.get(key));
     return rec ? rec.val : undefined;
   }
 }
