@@ -392,6 +392,8 @@ function initPopup() {
             ? resp.errors[resp.errors.length - 1].message
             : '采集任务失败，请检查网页状态';
           showError(errMsg);
+        } else {
+          showError('');
         }
         // 完成后拉取预览
         loadLatestTask();
@@ -433,6 +435,8 @@ function initPopup() {
             ? task.errors[task.errors.length - 1].message
             : '采集任务失败，请检查网页状态';
           showError(errMsg);
+        } else {
+          showError('');
         }
       }
     });
@@ -484,6 +488,7 @@ function initPopup() {
 
   function onCancel() {
     if (taskId == null) return;
+    showError('');
     chrome.runtime.sendMessage({ type: 'CANCEL_TASK', taskId }, (resp) => {
       if (chrome.runtime.lastError || !resp || !resp.ok) {
         showError('取消失败：' + (resp ? resp.error : '通信错误'));
@@ -491,6 +496,7 @@ function initPopup() {
       }
       stopPolling();
       setRunningUI(false);
+      showError('');
       setProgress(0, '已取消', null);
     });
   }
@@ -606,8 +612,11 @@ function initPopup() {
 
   if (els.openTabBtn) {
     els.openTabBtn.addEventListener('click', () => {
+      const targetUrl = chrome?.runtime?.getURL ? chrome.runtime.getURL('popup/index.html') : 'index.html';
       if (chrome && chrome.tabs && chrome.tabs.create) {
-        chrome.tabs.create({ url: chrome.runtime.getURL('src/popup/index.html') });
+        chrome.tabs.create({ url: targetUrl });
+      } else if (typeof window !== 'undefined') {
+        window.open(targetUrl, '_blank');
       }
     });
   }

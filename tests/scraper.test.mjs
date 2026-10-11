@@ -600,4 +600,41 @@ test('(q) commentsPerNote 为 0 时跳过评论提取阶段（极速模式）', 
   assert.equal(commentsRequested, false, 'commentsPerNote 为 0 时不应触发任何评论获取动作');
 });
 
+test('(r) cancel(taskId) 立即关闭后台标签页以停止正在进行的页面操作', async () => {
+  const tabs = makeTabs();
+  const { scraper, storage } = makeScraper({ tabs });
+  scraper._tabId = 99; // 模拟当前活动 tab
+
+  const task = baseTask('task_cancel_tab');
+  await storage.saveTask(task);
+  await scraper.cancel('task_cancel_tab');
+
+  assert.equal(scraper._tabId, null, 'cancel 后 scraper._tabId 应置为 null');
+  assert.deepEqual(tabs.ops.removed, [99], 'cancel 后应立即调用 tabs.remove 关闭当前标签页');
+});
+
+test('(s) run() 在执行中因取消引发网络/Fetch AbortError 时视为已取消而非失败', async () => {
+  const tabs = makeTabs();
+  const llm = makeLlm({
+    noteUrls: [{ url: 'https://xhs.com/explore/abort_test', title: 't' }],
+  });
+  const { scraper, storage } = makeScraper({ tabs, llm });
+
+  // 模拟在详情阶段网络请求被 abort（典型如 LLMClient fetch 遇到 abort）
+  llm.extractNoteDetail = async () => {
+    // 模拟 cancel 动作
+    await scraper.cancel('task_abort');
+    const err = new Error('LLM API 网络请求失败：The user aborted a request.');
+    throw err;
+  };
+
+  const task = baseTask('task_abort', { config: { notesLimit: 1 } });
+  await storage.saveTask(task);
+  await scraper.run(task);
+
+  const saved = await scraper.taskManager.getTask('task_abort');
+  assert.equal(saved.status, 'cancelled', '中途取消引发 abort 时任务状态应为 cancelled');
+  assert.equal(task.errors.length, 0, '中途取消引发 abort 不应向 task.errors 写入失败记录');
+});
+
 

@@ -477,7 +477,11 @@ export class Scraper {
           stepMessage: task.progress.stepMessage,
         });
       } catch (err) {
-        if (err && (err.isCancellation || err.code === 'RATE_LIMITED' || err instanceof RateLimitError || err.code === 'AUTH_REQUIRED')) {
+        if (
+          this._cancelled.has(task.id) ||
+          (err && (err.isCancellation || err.code === 'RATE_LIMITED' || err instanceof RateLimitError || err.code === 'AUTH_REQUIRED')) ||
+          String(err?.message || '').toLowerCase().includes('aborted')
+        ) {
           throw err;
         }
         // 单条失败：记录错误，将 currentNoteIndex 推进到本索引（标记已处理，避免 resume 时死重试），继续后续。
@@ -514,7 +518,7 @@ export class Scraper {
       await this.taskManager.saveProgress(task, { phase: 'done' });
       await this.taskManager.updateStatus(task, 'completed');
     } catch (err) {
-      if (err && err.isCancellation) {
+      if (this._cancelled.has(task.id) || (err && err.isCancellation) || String(err?.message || '').toLowerCase().includes('aborted')) {
         if (this._finishedEarly && this._finishedEarly.has(task.id)) {
           task.progress.phase = 'done';
           task.progress.stepMessage = `提前完成采集，已保存全部 ${task.progress.notesCollected} 篇数据`;
@@ -580,7 +584,7 @@ export class Scraper {
       await this.taskManager.saveProgress(task, { phase: 'done' });
       await this.taskManager.updateStatus(task, 'completed');
     } catch (err) {
-      if (err && err.isCancellation) {
+      if (this._cancelled.has(task.id) || (err && err.isCancellation) || String(err?.message || '').toLowerCase().includes('aborted')) {
         if (this._finishedEarly && this._finishedEarly.has(task.id)) {
           task.progress.phase = 'done';
           task.progress.stepMessage = `提前完成采集，已保存全部 ${task.progress.notesCollected} 篇数据`;
@@ -639,6 +643,7 @@ export class Scraper {
     // 既避免「非法状态转移」抛错，也保证取消标志不泄漏到 _cancelled 集合。
     if (task.status !== 'running') return task;
     this._cancelled.add(taskId);
+    await this._cleanupTab();
     try {
       await this.taskManager.updateStatus(task, 'cancelled');
     } catch (err) {
@@ -653,6 +658,7 @@ export class Scraper {
     if (!task) throw new Error(`finishEarly: 任务 ${taskId} 不存在`);
     if (task.status !== 'running') return task;
     this._cancelled.add(taskId);
+    await this._cleanupTab();
     try {
       task.progress.phase = 'done';
       task.progress.stepMessage = `提前完成采集，已保存全部 ${task.progress.notesCollected} 篇数据`;
