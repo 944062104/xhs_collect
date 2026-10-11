@@ -193,6 +193,8 @@ function initPopup() {
         } else if (resp.error === 'NO_TASK') {
           showError('任务已不存在，请重新采集');
           setProgress(0, '任务丢失');
+        } else {
+          showError('采集异常：' + (resp.error || '未知错误'));
         }
         return;
       }
