@@ -24,24 +24,62 @@ body {
 }
 
 .popup {
-  width: 320px;
+  width: 340px;
+  max-width: 100%;
+  margin: 0 auto;
   padding: 16px;
   display: flex;
   flex-direction: column;
   gap: 14px;
+  box-sizing: border-box;
+}
+
+@media (min-width: 500px) {
+  .popup {
+    width: 580px;
+    padding: 24px;
+  }
 }
 
 /* 头部 */
-.head h1 {
+.head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.head-title h1 {
   margin: 0;
   font-size: 18px;
   font-weight: 700;
   letter-spacing: 0.5px;
 }
-.head .sub {
+.head-title .sub {
   margin: 2px 0 0;
   font-size: 12px;
   color: var(--muted);
+}
+.btn-tab {
+  background: #fff;
+  border: 1px solid var(--line);
+  color: #475569;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 5px 9px;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+}
+.btn-tab:hover {
+  color: var(--primary);
+  border-color: var(--primary);
+  background: var(--track);
+}
+
+.field-grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
 }
 
 /* 区块卡片 */

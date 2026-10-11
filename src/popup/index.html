@@ -10,25 +10,38 @@
   <main class="popup">
     <!-- 核心区 -->
     <header class="head">
-      <h1>小红书采集助手</h1>
-      <p class="sub">关键词一键采集笔记</p>
+      <div class="head-title">
+        <h1>小红书采集助手</h1>
+        <p class="sub">关键词一键采集笔记与评论</p>
+      </div>
+      <button id="openTabBtn" class="btn-tab" title="在新标签页中打开（防止点击外部失焦关闭）">⤢ 独立窗口</button>
     </header>
 
     <section class="core">
       <label class="field">
-        <span>采集关键词</span>
-        <input id="keyword" type="text" placeholder="如：护肤 穿搭 美食" autofocus />
+        <span>采集关键词（支持逗号或换行批量输入）</span>
+        <input id="keyword" type="text" placeholder="如：护肤, 穿搭, 探店（多词自动连续采）" autofocus />
       </label>
 
-      <label class="field">
-        <span>采集数量</span>
-        <select id="limit">
-          <option value="10">10 篇</option>
-          <option value="20" selected>20 篇</option>
-          <option value="50">50 篇</option>
-          <option value="100">100 篇</option>
-        </select>
-      </label>
+      <div class="field-grid-2">
+        <label class="field">
+          <span>采集数量</span>
+          <select id="limit">
+            <option value="10">10 篇</option>
+            <option value="20" selected>20 篇</option>
+            <option value="50">50 篇</option>
+            <option value="100">100 篇</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>评论采集深度</span>
+          <select id="commentsDepth">
+            <option value="0">不采评论（极速）</option>
+            <option value="20" selected>20条热评</option>
+            <option value="50">50条深采</option>
+          </select>
+        </label>
+      </div>
 
       <div class="btn-group-main">
         <button id="startBtn" class="btn btn-primary">开始一键采集</button>

@@ -21,13 +21,14 @@ const REQUEST_TIMEOUT_MS = 60000; // 防止连接挂起导致 Service Worker 被
 // ----------------------------------------------------------------------------
 export function cleanHtml(html) {
   if (typeof html !== 'string') return '';
-  return html
+  const cleaned = html
     .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
     .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
     .replace(/<svg\b[^>]*>[\s\S]*?<\/svg>/gi, ' ')
     .replace(/data:[^"')\s]+/gi, ' ') // 去除 data: URI（如 base64 内联资源）
     .replace(/\s+/g, ' ')
     .trim();
+  return cleaned.length > 25000 ? cleaned.slice(0, 25000) : cleaned;
 }
 
 // ----------------------------------------------------------------------------
@@ -127,7 +128,7 @@ export function extractJson(text) {
 const SYSTEM_NOTE_LIST = `你是一个小红书网页数据提取器。用户会提供一段网页 HTML 片段（已去除脚本与样式），请从中提取笔记列表。
 只输出 JSON 数组，每个元素包含字段：
 - title：笔记标题（字符串）
-- url：笔记链接（字符串，尽量保留相对或绝对路径）
+- url：笔记链接（字符串，提取 a 标签的 href，支持 /search_result/... 或 /explore/... 或完整网址）
 - author：作者昵称（字符串）
 - likes：点赞数（数字或字符串）
 - type：类型（如 "图文" 或 "视频"）
@@ -243,6 +244,11 @@ export class LLMClient {
         this.apiUrl = trimmedBase.endsWith('/v1') ? `${trimmedBase}/messages` : `${trimmedBase}/v1/messages`;
       }
     }
+
+    // 若协议为 OpenAI 兼容，且模型未指定或仍为 Claude 默认值，自动适配为 gpt-4o-mini
+    if (this.protocol === 'openai' && (!this.model || this.model === DEFAULT_MODEL)) {
+      this.model = 'gpt-4o-mini';
+    }
   }
 
   // 调用大模型 API（支持 Anthropic 与 OpenAI 兼容协议），返回文本字符串。
@@ -343,7 +349,7 @@ export class LLMClient {
   }
 
   async extractNoteList(htmlSnippet) {
-    const cleaned = cleanHtml(htmlSnippet);
+    const cleaned = cleanHtml(htmlSnippet).replace(/<img\b[^>]*\/?>/gi, ' ');
     const prompt = this._buildPrompt('请提取该页面中的笔记列表。', cleaned);
     const data = await this._extract(SYSTEM_NOTE_LIST, prompt);
     if (!Array.isArray(data)) {

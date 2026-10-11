@@ -290,72 +290,81 @@ export class Scraper {
   // ---- 搜索阶段 ----------------------------------------------------------
 
   async _searchPhase(task) {
-    const url = this._searchUrl(task.keyword);
-    task.progress.stepMessage = `正在打开搜索页采集关键词“${task.keyword}”...`;
-    await this.taskManager.saveProgress(task, { stepMessage: task.progress.stepMessage });
-
-    const tabId = await this._navigate(url);
-    // 鉴权拦截检测：导航到搜索结果页后，若命中登录弹窗立即中止（抛 AuthRequiredError）。
-    await this._detectAuth(task, tabId);
-    await this._send(tabId, {
-      action: 'waitFor',
-      selectors: this._sel('search.feedsContainer'),
-      timeout: 10000,
-    });
-
+    const rawKeywords = task.config?.keywords || String(task.keyword || '').split(/[,，\n]+/).map((s) => s.trim()).filter(Boolean);
+    const keywords = rawKeywords.length > 0 ? rawKeywords : [task.keyword || ''];
     const limit = task.config.notesLimit;
-    while (task.progress.noteUrls.length < limit && task.progress.scrollCount < MAX_SEARCH_SCROLLS) {
-      this._throwIfCancelled(task.id);
-      task.progress.stepMessage = `正在搜索笔记（已发现 ${task.progress.noteUrls.length}/${limit} 篇）...`;
+
+    for (let k = 0; k < keywords.length; k++) {
+      if (task.progress.noteUrls.length >= limit) break;
+      const kw = keywords[k];
+      const url = this._searchUrl(kw);
+      task.progress.stepMessage = `正在打开搜索页采集关键词“${kw}”${keywords.length > 1 ? ` (${k + 1}/${keywords.length})` : ''}...`;
       await this.taskManager.saveProgress(task, { stepMessage: task.progress.stepMessage });
 
-      await this._send(tabId, { action: 'scroll', distance: 600, duration: 800 });
-      task.progress.scrollCount += 1;
-
-      // 1. 优先通过 content-script 在真实 DOM 中精准提取当前可见的笔记链接（毫秒级、0 Token）
-      let foundDirectly = false;
-      try {
-        const linkRes = await this._send(tabId, {
-          action: 'getNoteUrls',
-          selectors: this._sel('search.noteLink'),
-        });
-        if (linkRes && Array.isArray(linkRes.data) && linkRes.data.length > 0) {
-          for (const rawUrl of linkRes.data) {
-            let u = String(rawUrl).trim();
-            if (u.startsWith('/')) u = 'https://www.xiaohongshu.com' + u;
-            if (!task.progress.noteUrls.includes(u)) {
-              task.progress.noteUrls.push(u);
-              foundDirectly = true;
-            }
-          }
-        }
-      } catch (_) {}
-
-      // 2. 若 DOM 未直接命中（如特殊页面结构或测试环境），回退到 LLM 从 HTML 中提取
-      if (!foundDirectly && task.progress.noteUrls.length < limit) {
-        const html = (
-          await this._send(tabId, { action: 'getHTML', selectors: this._sel('search.feedsContainer') })
-        ).data;
-        const list = await this.llm.extractNoteList(html);
-        for (const item of list) {
-          if (item && item.url) {
-            let u = String(item.url).trim();
-            if (u.startsWith('/')) {
-              u = 'https://www.xiaohongshu.com' + u;
-            }
-            if (!task.progress.noteUrls.includes(u)) {
-              task.progress.noteUrls.push(u);
-            }
-          }
-        }
-      }
-      // CHECKPOINT：每轮滚动后保存已采集的 URL 列表，保证断点可恢复。
-      await this.taskManager.saveProgress(task, {
-        noteUrls: task.progress.noteUrls,
-        scrollCount: task.progress.scrollCount,
-        stepMessage: `正在搜索笔记（已发现 ${task.progress.noteUrls.length}/${limit} 篇）...`,
+      const tabId = await this._navigate(url);
+      await this._detectAuth(task, tabId);
+      await this._send(tabId, {
+        action: 'waitFor',
+        selectors: this._sel('search.feedsContainer'),
+        timeout: 10000,
       });
-      await this._randomPause(task);
+
+      let kwScrolls = 0;
+      const maxKwScrolls = Math.max(10, Math.ceil(MAX_SEARCH_SCROLLS / keywords.length));
+      while (task.progress.noteUrls.length < limit && kwScrolls < maxKwScrolls && task.progress.scrollCount < MAX_SEARCH_SCROLLS) {
+        this._throwIfCancelled(task.id);
+        task.progress.stepMessage = `正在搜索“${kw}”（已发现 ${task.progress.noteUrls.length}/${limit} 篇）...`;
+        await this.taskManager.saveProgress(task, { stepMessage: task.progress.stepMessage });
+
+        await this._send(tabId, { action: 'scroll', distance: 600, duration: 800 });
+        task.progress.scrollCount += 1;
+        kwScrolls += 1;
+
+        // 1. 优先通过 content-script 在真实 DOM 中精准提取当前可见的笔记链接（毫秒级、0 Token）
+        let foundDirectly = false;
+        try {
+          const linkRes = await this._send(tabId, {
+            action: 'getNoteUrls',
+            selectors: this._sel('search.noteLink'),
+          });
+          if (linkRes && Array.isArray(linkRes.data) && linkRes.data.length > 0) {
+            for (const rawUrl of linkRes.data) {
+              let u = String(rawUrl).trim();
+              if (u.startsWith('/')) u = 'https://www.xiaohongshu.com' + u;
+              if (!task.progress.noteUrls.includes(u)) {
+                task.progress.noteUrls.push(u);
+                foundDirectly = true;
+              }
+            }
+          }
+        } catch (_) {}
+
+        // 2. 若 DOM 未直接命中（如特殊页面结构或测试环境），回退到 LLM 从 HTML 中提取
+        if (!foundDirectly && task.progress.noteUrls.length < limit) {
+          const html = (
+            await this._send(tabId, { action: 'getHTML', selectors: this._sel('search.feedsContainer') })
+          ).data;
+          const list = await this.llm.extractNoteList(html);
+          for (const item of list) {
+            if (item && item.url) {
+              let u = String(item.url).trim();
+              if (u.startsWith('/')) {
+                u = 'https://www.xiaohongshu.com' + u;
+              }
+              if (!task.progress.noteUrls.includes(u)) {
+                task.progress.noteUrls.push(u);
+              }
+            }
+          }
+        }
+        // CHECKPOINT：每轮滚动后保存已采集的 URL 列表，保证断点可恢复。
+        await this.taskManager.saveProgress(task, {
+          noteUrls: task.progress.noteUrls,
+          scrollCount: task.progress.scrollCount,
+          stepMessage: `正在搜索“${kw}”（已发现 ${task.progress.noteUrls.length}/${limit} 篇）...`,
+        });
+        await this._randomPause(task);
+      }
     }
 
     task.progress.notesTotal = task.progress.noteUrls.length;
@@ -414,12 +423,15 @@ export class Scraper {
           }
         }
 
-        try {
-          const cRes = await this._send(tabId, { action: 'getComments' });
-          if (cRes && Array.isArray(cRes.data) && cRes.data.length > 0) {
-            comments = cRes.data;
-          }
-        } catch (_) {}
+        const commentDepth = task.config?.commentsPerNote ?? (task.config?.comments === false ? 0 : 20);
+        if (commentDepth > 0) {
+          try {
+            const cRes = await this._send(tabId, { action: 'getComments', limit: commentDepth });
+            if (cRes && Array.isArray(cRes.data) && cRes.data.length > 0) {
+              comments = cRes.data;
+            }
+          } catch (_) {}
+        }
 
         // 2. 若 DOM 未直接命中（如特殊页面结构或测试环境），回退到 LLM 提取
         if (!detail || (!detail.title && !detail.content)) {
@@ -429,7 +441,7 @@ export class Scraper {
           detail = await this.llm.extractNoteDetail(detailHtml);
         }
 
-        if (comments.length === 0) {
+        if (commentDepth > 0 && comments.length === 0) {
           try {
             const commentsHtml = (
               await this._send(tabId, { action: 'getHTML', selectors: this._sel('noteDetail.commentSection') })

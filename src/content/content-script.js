@@ -433,9 +433,10 @@ function handleGetNoteDetail(msg, sendResponse) {
 // getComments：从当前页面 DOM 中毫秒级直接提取评论列表。
 function handleGetComments(msg, sendResponse) {
   try {
+    var max = typeof msg.limit === 'number' && msg.limit > 0 ? msg.limit : 20;
     var comments = [];
     var itemEls = document.querySelectorAll('.comment-item, div[class*="comment-item"], div[class*="comment-inner"]');
-    for (var i = 0; i < Math.min(itemEls.length, 30); i++) {
+    for (var i = 0; i < Math.min(itemEls.length, max); i++) {
       var it = itemEls[i];
       var authEl = it.querySelector('.name, .author, [class*="name"]');
       var textEl = it.querySelector('.content, .text, [class*="content"]');

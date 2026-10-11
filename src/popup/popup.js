@@ -16,7 +16,9 @@ const DEFAULT_COMMENTS_PER_NOTE = 20;
 // 构造 START_TASK 消息。opts = { limit=20, comments=false, format='json', crawlDelay=0 }。
 function buildStartMessage(keyword, opts = {}) {
   const limit = typeof opts.limit === 'number' ? opts.limit : 20;
-  const comments = Boolean(opts.comments);
+  const commentsPerNote = typeof opts.commentsPerNote === 'number'
+    ? opts.commentsPerNote
+    : (opts.comments ? DEFAULT_COMMENTS_PER_NOTE : 0);
   const format = opts.format === 'csv' ? 'csv' : 'json';
   const crawlDelay = typeof opts.crawlDelay === 'number' ? opts.crawlDelay : 0;
   return {
@@ -24,7 +26,7 @@ function buildStartMessage(keyword, opts = {}) {
     keyword,
     config: {
       notesLimit: limit,
-      commentsPerNote: comments ? DEFAULT_COMMENTS_PER_NOTE : 0,
+      commentsPerNote,
       outputFormat: format,
       crawlDelay,
     },
@@ -198,6 +200,8 @@ function initPopup() {
     previewSection: $('previewSection'),
     previewCount: $('previewCount'),
     previewList: $('previewList'),
+    openTabBtn: $('openTabBtn'),
+    commentsDepth: $('commentsDepth'),
     finishEarlyBtn: $('finishEarlyBtn'),
     exportJsonBtn: $('exportJsonBtn'),
     exportCsvBtn: $('exportCsvBtn'),
@@ -231,12 +235,16 @@ function initPopup() {
 
   function loadConfig() {
     if (!chrome || !chrome.storage || !chrome.storage.local) return;
-    chrome.storage.local.get(['apiBase', 'model', 'apiKey', 'protocol', 'comments', 'crawlDelay', 'limit'], (cfg) => {
+    chrome.storage.local.get(['apiBase', 'model', 'apiKey', 'protocol', 'comments', 'commentsDepth', 'crawlDelay', 'limit'], (cfg) => {
       if (cfg.apiBase && els.apiBase) els.apiBase.value = cfg.apiBase;
       if (cfg.model && els.model) els.model.value = cfg.model;
       if (cfg.apiKey && els.apiKey) els.apiKey.value = cfg.apiKey;
       if (cfg.protocol && els.protocol) els.protocol.value = cfg.protocol;
-      if (typeof cfg.comments === 'boolean' && els.comments) els.comments.checked = cfg.comments;
+      if (cfg.commentsDepth && els.commentsDepth) {
+        els.commentsDepth.value = String(cfg.commentsDepth);
+      } else if (typeof cfg.comments === 'boolean' && els.commentsDepth) {
+        els.commentsDepth.value = cfg.comments ? '20' : '0';
+      }
       if (typeof cfg.limit === 'number' && els.limit) els.limit.value = String(cfg.limit);
       if (typeof cfg.crawlDelay === 'number' && els.delay) {
         crawlDelay = cfg.crawlDelay;
@@ -247,13 +255,15 @@ function initPopup() {
 
   function saveConfig() {
     if (!chrome || !chrome.storage || !chrome.storage.local) return;
+    const depthVal = els.commentsDepth ? Number(els.commentsDepth.value) : 20;
     chrome.storage.local.set(
       {
         apiBase: els.apiBase ? els.apiBase.value.trim() : '',
         model: els.model ? els.model.value.trim() : '',
         apiKey: els.apiKey ? els.apiKey.value.trim() : '',
         protocol: els.protocol ? els.protocol.value : 'auto',
-        comments: els.comments ? els.comments.checked : false,
+        comments: depthVal > 0,
+        commentsDepth: depthVal,
         crawlDelay,
         limit: els.limit ? Number(els.limit.value) || 20 : 20,
       },
@@ -437,9 +447,11 @@ function initPopup() {
       els.keyword.focus();
       return;
     }
+    const depth = els.commentsDepth ? Number(els.commentsDepth.value) : (els.comments && els.comments.checked ? 20 : 0);
     const msg = buildStartMessage(keyword, {
       limit: Number(els.limit.value) || 20,
-      comments: els.comments.checked,
+      comments: depth > 0,
+      commentsPerNote: depth,
       format: 'json',
       crawlDelay: Number(els.delay.value) || 0,
     });
@@ -592,6 +604,14 @@ function initPopup() {
   if (els.exportCommentsBtn) els.exportCommentsBtn.addEventListener('click', () => onExport('comments_csv'));
   if (els.testLlmBtn) els.testLlmBtn.addEventListener('click', onTestLlm);
 
+  if (els.openTabBtn) {
+    els.openTabBtn.addEventListener('click', () => {
+      if (chrome && chrome.tabs && chrome.tabs.create) {
+        chrome.tabs.create({ url: chrome.runtime.getURL('src/popup/index.html') });
+      }
+    });
+  }
+  if (els.commentsDepth) els.commentsDepth.addEventListener('change', saveConfig);
   if (els.protocol) els.protocol.addEventListener('change', saveConfig);
   if (els.apiBase) els.apiBase.addEventListener('change', saveConfig);
   if (els.model) els.model.addEventListener('change', saveConfig);

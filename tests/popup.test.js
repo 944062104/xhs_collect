@@ -63,6 +63,11 @@ test('buildStartMessage 透传 crawlDelay（高级抽屉的爬取延迟）', () 
   assert.equal(msg.config.crawlDelay, 2000);
 });
 
+test('buildStartMessage 支持显式指定 commentsPerNote 评论深度', () => {
+  const msg = buildStartMessage('露营', { limit: 20, commentsPerNote: 50 });
+  assert.equal(msg.config.commentsPerNote, 50);
+});
+
 // ---------------------------------------------------------------------------
 // progressToPercent
 // ---------------------------------------------------------------------------

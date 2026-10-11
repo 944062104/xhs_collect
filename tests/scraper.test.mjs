@@ -527,4 +527,77 @@ test('(o) finishEarly(taskId) 允许用户提前结束采集并将任务以 comp
   assert.deepEqual(tabs.ops.removed, [1], '提前结束后标签页应安全关闭');
 });
 
+test('(p) 批量关键词输入（逗号分隔）在搜索阶段分别检索各词并合并去重 URL', async () => {
+  const tabs = makeTabs();
+  const llm = makeLlm();
+  const { scraper, storage } = makeScraper({ tabs, llm });
+
+  // 模拟搜索阶段分别为不同关键词返回不同笔记链接
+  let currentNavUrl = '';
+  tabs.create = async ({ url }) => {
+    currentNavUrl = url;
+    tabs.ops.created.push(url);
+    return { id: 1 };
+  };
+  tabs.update = async (id, { url }) => {
+    currentNavUrl = url;
+    tabs.ops.updated.push(url);
+    return { id };
+  };
+  const origSendMessage = tabs.sendMessage;
+  tabs.sendMessage = async (id, msg) => {
+    if (msg.action === 'getNoteUrls') {
+      if (currentNavUrl.includes(encodeURIComponent('护肤'))) {
+        return { ok: true, data: ['https://xhs.com/explore/skin1'] };
+      }
+      if (currentNavUrl.includes(encodeURIComponent('穿搭'))) {
+        return { ok: true, data: ['https://xhs.com/explore/outfit1'] };
+      }
+    }
+    return origSendMessage(id, msg);
+  };
+
+  const task = baseTask('task_batch_kw', {
+    keyword: '护肤, 穿搭',
+    config: { notesLimit: 2 },
+  });
+  await storage.saveTask(task);
+  await scraper.run(task);
+
+  assert.equal(task.status, 'completed');
+  assert.equal(task.progress.noteUrls.length, 2);
+  assert.ok(task.progress.noteUrls.includes('https://xhs.com/explore/skin1'));
+  assert.ok(task.progress.noteUrls.includes('https://xhs.com/explore/outfit1'));
+});
+
+test('(q) commentsPerNote 为 0 时跳过评论提取阶段（极速模式）', async () => {
+  const tabs = makeTabs();
+  let commentsRequested = false;
+  const llm = makeLlm({
+    noteUrls: [{ url: 'https://xhs.com/explore/no_comment', title: 't' }],
+  });
+  llm.extractComments = async () => {
+    commentsRequested = true;
+    return [];
+  };
+  const { scraper, storage } = makeScraper({ tabs, llm });
+
+  const origSend = tabs.sendMessage;
+  tabs.sendMessage = async (id, msg) => {
+    if (msg.action === 'getComments') {
+      commentsRequested = true;
+    }
+    return origSend(id, msg);
+  };
+
+  const task = baseTask('task_no_comment', {
+    config: { notesLimit: 1, commentsPerNote: 0 },
+  });
+  await storage.saveTask(task);
+  await scraper.run(task);
+
+  assert.equal(task.status, 'completed');
+  assert.equal(commentsRequested, false, 'commentsPerNote 为 0 时不应触发任何评论获取动作');
+});
+
 
