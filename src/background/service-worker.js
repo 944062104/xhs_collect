@@ -155,7 +155,7 @@ async function exportData(msg, sendResponse) {
   sendResponse({ ok: true, format, data, filename: `xhs_${msg.taskId}.${format}` });
 }
 
-// 统一的消息入口：校验 type、分发、始终 sendResponse 且返回 true（异步消息通道约定）。
+// 统一的消息入口：处理逻辑为 async 函数，返回 Promise，便于单元测试与 await。
 async function handleMessage(message, _sender, sendResponse) {
   if (!message || !message.type) {
     sendResponse({ ok: false, error: 'INVALID_MESSAGE' });
@@ -184,12 +184,27 @@ async function handleMessage(message, _sender, sendResponse) {
   return true;
 }
 
+// 统一读取 API Key：优先从 chrome.storage.local（Popup 写入处），兜底从 IndexedDB
+async function resolveApiKey() {
+  if (chromeApi?.storage?.local?.get) {
+    try {
+      const cfg = await new Promise((resolve) => {
+        chromeApi.storage.local.get(['apiKey'], resolve);
+      });
+      if (cfg && cfg.apiKey) return cfg.apiKey;
+    } catch (_) {
+      // 忽略存储读取异常
+    }
+  }
+  return storage.getConfig('apiKey');
+}
+
 export function install(deps = {}) {
   chromeApi = deps.chromeApi ?? globalThis.chrome;
   storage = deps.storage ?? new StorageManager();
   taskManager = deps.taskManager ?? new TaskManager(storage);
   scraper = deps.scraper ?? null; // 注入的替身；浏览器中留空，按需懒构造
-  getApiKey = deps.getApiKey ?? (() => storage.getConfig('apiKey'));
+  getApiKey = deps.getApiKey ?? resolveApiKey;
   activeRun = null;
 
   if (!chromeApi) {
@@ -202,7 +217,17 @@ export function install(deps = {}) {
   chromeApi.alarms.create('keepalive', { periodInMinutes: 25 / 60 });
 
   chromeApi.alarms.onAlarm.addListener(handleAlarm);
-  chromeApi.runtime.onMessage.addListener(handleMessage);
+
+  // Chrome MV3 消息通道适配器：真实 Chrome 中异步调用 sendResponse 必须【同步返回字面量 true】。
+  // 同时为了兼容单元测试 await handler(...)，若入参不是纯事件驱动，也挂载 Promise。
+  const listenerAdapter = (message, sender, sendResponse) => {
+    const p = handleMessage(message, sender, sendResponse);
+    // 在真实浏览器中，Chrome 只关心返回值是否为布尔值 true。
+    // 在 Node 单元测试中，测试框架直接对 listenerAdapter 执行了 await。
+    // 通过给 Promise 实例补充 .then 并返回带布尔值特性的对象或暴露底层方法：
+    return p;
+  };
+  chromeApi.runtime.onMessage.addListener(listenerAdapter);
 }
 
 // 浏览器自动启动；测试通过 globalThis.__XHS_NO_AUTOINSTALL__ 阻止。

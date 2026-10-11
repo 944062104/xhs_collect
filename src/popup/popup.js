@@ -246,7 +246,8 @@ function initPopup() {
     });
     chrome.runtime.sendMessage(msg, (resp) => {
       if (chrome.runtime.lastError || !resp) {
-        showError('与后台通信失败，请刷新页面重试');
+        const detail = chrome.runtime.lastError ? chrome.runtime.lastError.message : '后台未响应';
+        showError('与后台通信失败：' + detail);
         return;
       }
       if (!resp.ok) {
