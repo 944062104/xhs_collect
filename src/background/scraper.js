@@ -17,6 +17,15 @@
 
 import { TaskManager } from './task-manager.js';
 
+// 取消信号错误：run/resume 的 catch 会据此把任务置为 cancelled 而非 failed。
+class ScraperCancelledError extends Error {
+  constructor(taskId) {
+    super(`任务 ${taskId} 已被取消`);
+    this.name = 'ScraperCancelledError';
+    this.isCancellation = true;
+  }
+}
+
 // 搜索阶段安全上限，避免 LLM 始终返回不足 notesLimit 的 URL 时陷入死循环。
 const MAX_SEARCH_SCROLLS = 50;
 // 防封控：每次操作之间随机 2~5 秒停顿。
@@ -61,6 +70,14 @@ export class Scraper {
     // 内部协作对象：状态机由 storage 派生的 TaskManager 管理（保持 DI 边界，storage 已是注入点）。
     this.taskManager = new TaskManager(storage);
     this._tabId = null; // 复用的标签页 id，避免每次导航都开新标签
+    this._cancelled = new Set(); // 取消中的任务 id；循环边界检查，使 cancel 能中断进行中的 run/resume
+  }
+
+  // 若任务已被取消则抛出取消信号（由 run/resume 的 catch 转为 cancelled 状态）。
+  _throwIfCancelled(taskId) {
+    if (this._cancelled.has(taskId)) {
+      throw new ScraperCancelledError(taskId);
+    }
   }
 
   // ---- 模式加载 / 选择器 / URL 解析 --------------------------------------
@@ -140,6 +157,7 @@ export class Scraper {
 
     const limit = task.config.notesLimit;
     while (task.progress.noteUrls.length < limit && task.progress.scrollCount < MAX_SEARCH_SCROLLS) {
+      this._throwIfCancelled(task.id);
       await this._send(tabId, { action: 'scroll', distance: 600, duration: 800 });
       task.progress.scrollCount += 1;
       const html = (
@@ -173,6 +191,7 @@ export class Scraper {
     // resume 时 task.progress.currentNoteIndex 已指向最后成功采集的索引，因此自动跳过已处理项。
     const start = task.progress.currentNoteIndex + 1;
     for (let i = start; i < task.progress.noteUrls.length; i++) {
+      this._throwIfCancelled(task.id);
       const url = task.progress.noteUrls[i];
       try {
         const tabId = await this._navigate(url);
@@ -248,6 +267,7 @@ export class Scraper {
       await this.taskManager.saveProgress(task, { phase: 'done' });
       await this.taskManager.updateStatus(task, 'completed');
     } catch (err) {
+      if (err && err.isCancellation) return; // 取消：保持 cancelled 状态，不记为失败
       task.errors.push({
         phase: task.progress.phase,
         fatal: true,
@@ -275,6 +295,7 @@ export class Scraper {
       await this.taskManager.saveProgress(task, { phase: 'done' });
       await this.taskManager.updateStatus(task, 'completed');
     } catch (err) {
+      if (err && err.isCancellation) return; // 取消：保持 cancelled 状态，不记为失败
       task.errors.push({
         phase: task.progress.phase,
         fatal: true,
@@ -288,6 +309,7 @@ export class Scraper {
   }
 
   async cancel(taskId) {
+    this._cancelled.add(taskId);
     const task = await this.taskManager.getTask(taskId);
     if (!task) throw new Error(`cancel: 任务 ${taskId} 不存在`);
     await this.taskManager.updateStatus(task, 'cancelled');

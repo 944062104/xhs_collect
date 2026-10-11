@@ -224,3 +224,33 @@ test('cancel(taskId) 将任务标记为 cancelled', async () => {
   const saved = await scraper.taskManager.getTask('task_cancel');
   assert.equal(saved.status, 'cancelled');
 });
+
+// ---------------------------------------------------------------------------
+// (e) 进行中的 run() 应被 cancel 中断：循环边界检查取消标志，任务置为 cancelled 而非 failed
+// ---------------------------------------------------------------------------
+
+test('(e) 进行中的 run() 被 cancel 中断，任务置为 cancelled（不记为失败）', async () => {
+  // LLM 每次只返回同一个 URL，使搜索阶段持续滚动（永远达不到 notesLimit=3）。
+  const onlyUrl = 'https://xhs.com/explore/1';
+  const llm = makeLlm({ noteUrls: [{ url: onlyUrl }] });
+  const tabs = makeTabs();
+  const storage = new StorageManager(`xhs-e-${Math.random().toString(36).slice(2)}`);
+  const scraper = new Scraper({ storage, llm, patterns: PATTERNS, tabs, sleep: noSleep });
+  let cancelTriggered = false;
+  // 包装 sleep：首次调用即触发取消（模拟运行中收到取消信号）
+  scraper.sleep = async () => {
+    if (!cancelTriggered) {
+      cancelTriggered = true;
+      await scraper.cancel('task_e');
+    }
+  };
+
+  const task = baseTask('task_e');
+  await storage.saveTask(task);
+  await scraper.run(task);
+
+  const saved = await scraper.taskManager.getTask('task_e');
+  assert.equal(saved.status, 'cancelled', 'run 中途被 cancel 应置为 cancelled');
+  assert.notEqual(task.progress.phase, 'done', '被取消的任务不应进入 done 阶段');
+  assert.equal(task.errors.length, 0, '取消不应记为失败错误');
+});
