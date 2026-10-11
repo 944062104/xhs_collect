@@ -112,7 +112,10 @@ const mockDocument = {
     }
     return { snapshotLength: 0, snapshotItem: () => null, singleNodeValue: null, iterateNext: () => null };
   },
-  querySelectorAll() {
+  querySelectorAll(sel) {
+    if (docState.allMatches && docState.allMatches[sel]) {
+      return docState.allMatches[sel];
+    }
     return [];
   },
   createElement() {
@@ -127,6 +130,7 @@ const mockDocument = {
 function makeElement(tag = 'div', props = {}) {
   return {
     tagName: (tag || 'div').toUpperCase(),
+    className: props.className != null ? props.className : '',
     textContent: props.textContent != null ? props.textContent : '',
     outerHTML: props.outerHTML != null ? props.outerHTML : `<${tag}>${(props.textContent || '')}</${tag}>`,
     type: props.type != null ? props.type : undefined,
@@ -147,6 +151,9 @@ function makeElement(tag = 'div', props = {}) {
     },
     getAttribute(name) {
       return props[name] != null ? props[name] : null;
+    },
+    querySelectorAll(sel) {
+      return docState.allMatches && docState.allMatches[sel] ? docState.allMatches[sel] : (this.children || []);
     },
   };
 }
@@ -170,6 +177,8 @@ const sandbox = {
   chrome: mockChrome,
   setTimeout,
   clearTimeout,
+  setInterval,
+  clearInterval,
   console,
   KeyboardEvent: MockKeyboardEvent,
   Event: MockEvent,
@@ -188,6 +197,7 @@ function resetDoc() {
   docState.xpathMatches = {};
   docState.textMatches = {};
   docState.textMatchesDeep = {};
+  docState.allMatches = {};
   docState.setterCalls = 0;
   docState.cssThrows = false;
   docState.scrollTotal = 0;
@@ -423,4 +433,251 @@ test('onMessage waitFor：requireVisible 为 true 时跳过 display:none 等不�
   assert.equal(visibleResp.ok, false);
   assert.equal(visibleResp.error, 'TIMEOUT');
 });
+
+test('onMessage getNoteDetail：提取标题、正文以及新增的收藏数、发布日期、封面图', async () => {
+  resetDoc();
+  docState.cssMatches['.note-title'] = makeElement('h1', { textContent: '测试笔记标题' });
+  docState.cssMatches['#detail-desc'] = makeElement('div', { textContent: '测试正文内容' });
+  docState.cssMatches['.username'] = makeElement('span', { textContent: '小红薯达人' });
+  docState.cssMatches['.like-wrapper .count'] = makeElement('span', { textContent: '350' });
+  docState.cssMatches['.collect-wrapper .count'] = makeElement('span', { textContent: '128' });
+  docState.cssMatches['.date'] = makeElement('span', { textContent: '2026-10-10 14:00' });
+  
+  // 模拟图片
+  const img = makeElement('img');
+  img.src = 'https://sns-img.xhscdn.com/cover.jpg';
+  docState.allMatches['.note-slider img, div[class*="image"] img, .media-container img, [class*="swiper"] img'] = [img];
+
+  const { response } = dispatch({ action: 'getNoteDetail', selectors: ['.note-title'] });
+  const resp = await response;
+  assert.equal(resp.ok, true);
+  assert.equal(resp.data.title, '测试笔记标题');
+  assert.equal(resp.data.collects, 128);
+  assert.equal(resp.data.publishedAt, '2026-10-10 14:00');
+  assert.equal(resp.data.coverUrl, 'https://sns-img.xhscdn.com/cover.jpg');
+});
+
+test('onMessage getNoteUrls：保留带 xsec_token 的完整 URL 且补全域名', async () => {
+  resetDoc();
+  const a1 = makeElement('a', {
+    href: '/explore/6a44fd5f00000000110102b9?xsec_token=ABDVsoY00ucAH0BLIM3X3d7CDWFZr6X0PEPVmR0ewM4wk=&xsec_source=pc_feed'
+  });
+  docState.allMatches['a[href*="/search_result/"], a[href*="/explore/"]'] = [a1];
+
+  const { response } = dispatch({ action: 'getNoteUrls' });
+  const resp = await response;
+  assert.equal(resp.ok, true);
+  assert.equal(resp.data.length, 1);
+  assert.equal(
+    resp.data[0],
+    'https://www.xiaohongshu.com/explore/6a44fd5f00000000110102b9?xsec_token=ABDVsoY00ucAH0BLIM3X3d7CDWFZr6X0PEPVmR0ewM4wk=&xsec_source=pc_feed'
+  );
+});
+
+test('onMessage getNoteDetail：提取 authorId、authorUrl、totalComments，并将万级计数解析为纯数字', async () => {
+  resetDoc();
+  docState.cssMatches['.note-title'] = makeElement('h1', { textContent: '万赞爆款笔记' });
+  docState.cssMatches['#detail-desc'] = makeElement('div', { textContent: '正文内容' });
+  docState.cssMatches['.username'] = makeElement('span', { textContent: 'Coco' });
+  docState.cssMatches['.like-wrapper .count'] = makeElement('span', { textContent: '3.3万' });
+  docState.cssMatches['.collect-wrapper .count'] = makeElement('span', { textContent: '1.2万' });
+  docState.cssMatches['.chat-wrapper .count'] = makeElement('span', { textContent: '458' });
+  docState.cssMatches['a[href*="/user/profile/"]'] = makeElement('a', {
+    href: '/user/profile/5c15a50d000000000703b76c?channel_type=explore_feed'
+  });
+
+  const { response } = dispatch({ action: 'getNoteDetail', selectors: ['.note-title'] });
+  const resp = await response;
+  assert.equal(resp.ok, true);
+  assert.equal(resp.data.likes, 33000);
+  assert.equal(resp.data.collects, 12000);
+  assert.equal(resp.data.totalComments, 458);
+  assert.equal(resp.data.authorId, '5c15a50d000000000703b76c');
+  assert.equal(resp.data.authorUrl, 'https://www.xiaohongshu.com/user/profile/5c15a50d000000000703b76c?channel_type=explore_feed');
+});
+
+
+test('onMessage getComments：提取评论并包含 IP 属地、作者标记与楼中楼层级', async () => {
+  resetDoc();
+  const c1 = makeElement('div', { className: 'comment-item' });
+  const c1Auth = makeElement('span', { className: 'name', textContent: '楼主粉丝' });
+  const c1Text = makeElement('div', { className: 'content', textContent: '真不错！' });
+  const c1Date = makeElement('span', { className: 'date', textContent: '03-12 广东' });
+  c1.querySelector = (sel) => {
+    if (sel.includes('name')) return c1Auth;
+    if (sel.includes('content')) return c1Text;
+    if (sel.includes('date')) return c1Date;
+    return null;
+  };
+
+  const c2 = makeElement('div', { className: 'comment-item reply-item' });
+  const c2Auth = makeElement('span', { className: 'name', textContent: '小红薯达人' });
+  const c2Badge = makeElement('span', { className: 'author-badge', textContent: '作者' });
+  const c2Text = makeElement('div', { className: 'content', textContent: '感谢支持！' });
+  const c2Date = makeElement('span', { className: 'date', textContent: '03-12 浙江' });
+  c2.querySelector = (sel) => {
+    if (sel.includes('name')) return c2Auth;
+    if (sel.includes('author-badge') || sel.includes('author-tag')) return c2Badge;
+    if (sel.includes('content')) return c2Text;
+    if (sel.includes('date')) return c2Date;
+    return null;
+  };
+
+  docState.allMatches['.comment-item, div[class*="comment-item"], .parent-comment, div[class*="parent-comment"]'] = [c1, c2];
+
+  const { response } = dispatch({ action: 'getComments', limit: 10 });
+  const resp = await response;
+  assert.equal(resp.ok, true);
+  assert.equal(resp.data.length, 2);
+  assert.equal(resp.data[0].location, '广东');
+  assert.equal(resp.data[0].isAuthor, false);
+  assert.equal(resp.data[0].level, 'root');
+  assert.equal(resp.data[1].location, '浙江');
+  assert.equal(resp.data[1].isAuthor, true);
+  assert.equal(resp.data[1].level, 'reply');
+});
+
+test('onMessage getComments：解析万级点赞并自动触发展开折叠回复', async () => {
+  resetDoc();
+  const c1 = makeElement('div', { className: 'comment-item' });
+  const c1Auth = makeElement('span', { className: 'name', textContent: '热评大神' });
+  const c1Text = makeElement('div', { className: 'content', textContent: '神仙笔记！' });
+  const c1Like = makeElement('span', { className: 'count', textContent: '1.2万' });
+  c1.querySelector = (sel) => {
+    if (sel.includes('name')) return c1Auth;
+    if (sel.includes('content')) return c1Text;
+    if (sel.includes('like')) return c1Like;
+    return null;
+  };
+
+  const expandBtn = makeElement('button', { className: 'show-more', textContent: '展开 3 条回复' });
+  let clicked = false;
+  expandBtn.click = () => { clicked = true; };
+
+  docState.allMatches['.comment-item, div[class*="comment-item"], .parent-comment, div[class*="parent-comment"]'] = [c1];
+  docState.allMatches['.show-more, [class*="show-more"], [class*="reply-expand"], [class*="expand-btn"], [class*="reply-more"], [class*="comment-more"]'] = [expandBtn];
+
+  const { response } = dispatch({ action: 'getComments', limit: 10 });
+  const resp = await response;
+  assert.equal(resp.ok, true);
+  assert.equal(resp.data[0].likes, 12000);
+  assert.equal(clicked, true, '当存在折叠回复按钮时应触发 click 展开');
+});
+
+test('parseCount：正确将小红书数值字符串解析为整数', () => {
+
+  // 通过 vm 上下文暴露或在 module.exports 取出
+  const fn = sandbox.parseCount;
+  assert(typeof fn === 'function', 'parseCount 必须是函数');
+  assert.equal(fn('1.3万'), 13000);
+  assert.equal(fn('2.5w'), 25000);
+  assert.equal(fn('3.3W'), 33000);
+  assert.equal(fn('999+'), 999);
+  assert.equal(fn('7144'), 7144);
+  assert.equal(fn(7144), 7144);
+  assert.equal(fn('赞'), 0);
+  assert.equal(fn(''), 0);
+  assert.equal(fn(null), 0);
+  assert.equal(fn(undefined), 0);
+  assert.equal(fn('1.5亿'), 150000000);
+});
+
+test('onMessage setSearchSort：自动识别并点击筛选浮层中的排序项', async () => {
+  resetDoc();
+  let filterClicked = false;
+  let sortClicked = false;
+
+  const filterBtn = makeElement('div', { textContent: ' 筛选 ' });
+  filterBtn.click = () => { filterClicked = true; };
+
+  const sortOption = makeElement('div', { textContent: '最多点赞' });
+  sortOption.click = () => { sortClicked = true; };
+
+  // 模拟文本包含命中
+  docState.textMatches['筛选'] = filterBtn;
+  docState.textMatches['最多点赞'] = sortOption;
+
+  const { response } = dispatch({ action: 'setSearchSort', sortType: 'popularity_descending' });
+  const resp = await response;
+  assert.equal(resp.ok, true);
+  assert.equal(sortClicked, true, '应点击最多点赞选项');
+});
+
+test('onMessage setSearchSort：在展开的排序依据浮层中精准命中最新/最多点赞胶囊', async () => {
+  resetDoc();
+  let sortClicked = false;
+
+  const header = makeElement('span', { textContent: '排序依据' });
+  const optLatest = makeElement('div', { textContent: '最新' });
+  optLatest.click = () => { sortClicked = true; };
+
+  const popup = makeElement('div', { className: 'filter-panel' });
+  popup.children = [header, optLatest];
+  header.parentElement = popup;
+  optLatest.parentElement = popup;
+
+  docState.allMatches = {
+    'div, span, p, label, section, h3, h4': [header],
+    'button, div, span, a': [optLatest],
+  };
+
+  const { response } = dispatch({ action: 'setSearchSort', sortType: 'time_descending' });
+  const resp = await response;
+  assert.equal(resp.ok, true);
+  assert.equal(sortClicked, true, '应精准点击排序依据浮层中的【最新】胶囊按钮');
+});
+
+test('onMessage setSearchSort：存在左侧分类栏时必须排除分类栏并准确点击右侧筛选按钮', async () => {
+  resetDoc();
+  let categoryTabClicked = false;
+  let filterBtnClicked = false;
+  let sortClicked = false;
+
+  // 模拟左侧分类栏，父容器带有 filter-box 类，内部有“图文”、“视频”
+  const categoryContainer = makeElement('div', { className: 'filter-box channel-filter' });
+  const tabImage = makeElement('div', { textContent: '图文', className: 'tab-item' });
+  tabImage.click = () => { categoryTabClicked = true; };
+  categoryContainer.children = [tabImage];
+
+  // 模拟右侧真正的筛选按钮
+  const realFilterBtn = makeElement('div', { textContent: ' 筛选 ', className: 'filter-btn-trigger' });
+  realFilterBtn.click = () => { filterBtnClicked = true; };
+
+  // 排序项
+  const sortOption = makeElement('div', { textContent: '最新' });
+  sortOption.click = () => { sortClicked = true; };
+
+  docState.cssMatches['[class*="filter-btn"], [class*="filterBtn"], [class*="filterBox"]'] = categoryContainer;
+  docState.textMatches['筛选'] = realFilterBtn;
+  docState.textMatches['最新'] = sortOption;
+
+  const { response } = dispatch({ action: 'setSearchSort', sortType: 'time_descending' });
+  const resp = await response;
+  assert.equal(categoryTabClicked, false, '绝不可误触左侧分类栏');
+  assert.equal(filterBtnClicked, true, '应点击真正的筛选按钮');
+});
+
+test('onMessage setSearchSort：浮层未展开时绝不误判全局文本为排序项', async () => {
+  resetDoc();
+  let fakeNoteClicked = false;
+  let realFilterClicked = false;
+
+  // 页面上存在一篇包含“最新”字样的普通笔记
+  const fakeNote = makeElement('div', { textContent: '最新爆款穿搭指南' });
+  fakeNote.click = () => { fakeNoteClicked = true; };
+
+  const filterBtn = makeElement('button', { textContent: '筛选' });
+  filterBtn.click = () => { realFilterClicked = true; };
+
+  docState.textMatches['最新'] = fakeNote;
+  docState.textMatches['筛选'] = filterBtn;
+
+  const { response } = dispatch({ action: 'setSearchSort', sortType: 'time_descending' });
+  const resp = await response;
+  assert.equal(fakeNoteClicked, false, '绝不可将包含“最新”的普通笔记误判为排序按钮并直接点击');
+  assert.equal(realFilterClicked, true, '应先点击展开筛选按钮');
+});
+
+
+
 
