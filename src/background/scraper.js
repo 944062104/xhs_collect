@@ -193,8 +193,9 @@ export class Scraper {
     for (let i = start; i < task.progress.noteUrls.length; i++) {
       this._throwIfCancelled(task.id);
       const url = task.progress.noteUrls[i];
+      let tabId = null;
       try {
-        const tabId = await this._navigate(url);
+        tabId = await this._navigate(url);
         await this._send(tabId, {
           action: 'waitFor',
           selectors: this._sel('noteDetail.container'),
@@ -229,11 +230,9 @@ export class Scraper {
           notesCollected: task.progress.notesCollected,
           commentsCollected: task.progress.commentsCollected,
         });
-
-        await this._send(tabId, { action: 'closeModal' });
-        await this._randomPause();
       } catch (err) {
         // 单条失败：记录错误，将 currentNoteIndex 推进到本索引（标记已处理，避免 resume 时死重试），继续后续。
+        // 通过 saveTask 落库，确保 task.errors 增量持久化（而非污染 task.progress）。
         task.errors.push({
           index: i,
           url,
@@ -242,12 +241,16 @@ export class Scraper {
           at: Date.now(),
         });
         task.progress.currentNoteIndex = i;
-        await this.taskManager.saveProgress(task, {
-          currentNoteIndex: task.progress.currentNoteIndex,
-          errors: task.errors,
-        });
+        await this.storage.saveTask(task);
         continue;
       }
+      // 关闭弹层：属于清理步骤，失败不应算作笔记采集失败。
+      try {
+        if (tabId != null) await this._send(tabId, { action: 'closeModal' });
+      } catch (closeErr) {
+        console.warn(`closeModal 失败 (index=${i}):`, closeErr?.message ?? closeErr);
+      }
+      await this._randomPause();
     }
   }
 
@@ -274,8 +277,10 @@ export class Scraper {
         message: String(err?.message ?? err),
         at: Date.now(),
       });
-      await this.taskManager.saveProgress(task, { errors: task.errors });
+      // updateStatus 会通过 saveTask 落库整个 task（含 task.errors），无需经 saveProgress 污染 progress。
       await this.taskManager.updateStatus(task, 'failed');
+    } finally {
+      this._cancelled.delete(task.id); // 释放取消标志，避免长生命周期 SW 中集合无限增长
     }
   }
 
@@ -285,8 +290,9 @@ export class Scraper {
       if (task.status !== 'running') {
         await this.taskManager.updateStatus(task, 'running');
       }
-      // noteUrls 为空说明搜索阶段未完成，先补完搜索；否则直接进入详情阶段从断点继续。
-      if (!task.progress.noteUrls || task.progress.noteUrls.length === 0) {
+      // 搜索阶段未完成（phase 仍为 'searching'，或 noteUrls 仍为空）时先补完搜索；
+      // 否则直接进入详情阶段从断点（currentNoteIndex+1）继续。搜索重跑安全（URL 去重）。
+      if (task.progress.phase === 'searching' || !task.progress.noteUrls || task.progress.noteUrls.length === 0) {
         await this._searchPhase(task);
       }
       await this._detailPhase(task);
@@ -303,16 +309,21 @@ export class Scraper {
         message: String(err?.message ?? err),
         at: Date.now(),
       });
-      await this.taskManager.saveProgress(task, { errors: task.errors });
+      // updateStatus 会通过 saveTask 落库整个 task（含 task.errors），无需经 saveProgress 污染 progress。
       await this.taskManager.updateStatus(task, 'failed');
+    } finally {
+      this._cancelled.delete(task.id); // 释放取消标志，避免长生命周期 SW 中集合无限增长
     }
   }
 
   async cancel(taskId) {
-    this._cancelled.add(taskId);
     const task = await this.taskManager.getTask(taskId);
     if (!task) throw new Error(`cancel: 任务 ${taskId} 不存在`);
-    await this.taskManager.updateStatus(task, 'cancelled');
+    this._cancelled.add(taskId);
+    // 已经是 cancelled 则幂等，避免对已终态任务触发「非法状态转移」。
+    if (task.status !== 'cancelled') {
+      await this.taskManager.updateStatus(task, 'cancelled');
+    }
     return task;
   }
 }

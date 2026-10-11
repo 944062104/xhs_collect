@@ -210,6 +210,11 @@ test('(d) 单条笔记失败被记录到 errors，其余笔记仍完成', async 
   assert.equal(task.progress.notesCollected, 2, 'notesCollected 应为 2');
   assert.equal(task.errors.length, 1, '应记录 1 条错误');
   assert.equal(task.status, 'completed', '任务仍应整体 completed（不因单条失败中止）');
+
+  // 持久化契约：错误历史应从存储中读回（不在 task.progress 内污染）。
+  const saved = await scraper.taskManager.getTask('task_d');
+  assert.equal(saved.errors.length, 1, '错误应落库到 task.errors');
+  assert.equal(saved.progress.errors, undefined, 'task.progress 不应被 errors 污染');
 });
 
 // ---------------------------------------------------------------------------
@@ -253,4 +258,34 @@ test('(e) 进行中的 run() 被 cancel 中断，任务置为 cancelled（不记
   assert.equal(saved.status, 'cancelled', 'run 中途被 cancel 应置为 cancelled');
   assert.notEqual(task.progress.phase, 'done', '被取消的任务不应进入 done 阶段');
   assert.equal(task.errors.length, 0, '取消不应记为失败错误');
+});
+
+// ---------------------------------------------------------------------------
+// (f) 搜索阶段中断（phase=searching、noteUrls 部分采集）后 resume 应补完搜索
+// ---------------------------------------------------------------------------
+
+test('(f) 搜索阶段中断后 resume 会补完搜索，而非静默少采', async () => {
+  const urls = ['https://xhs.com/explore/1', 'https://xhs.com/explore/2', 'https://xhs.com/explore/3'];
+  const llm = makeLlm({ noteUrls: urls.map((u) => ({ url: u })) });
+  const { scraper, storage } = makeScraper({ llm });
+
+  // 预置：搜索阶段中断 —— phase 仍为 searching，noteUrls 仅 1 条（部分采集）
+  const task = baseTask('task_f', {
+    progress: {
+      phase: 'searching',
+      notesCollected: 0,
+      notesTotal: 1,
+      currentNoteIndex: -1,
+      commentsCollected: 0,
+      scrollCount: 1,
+      noteUrls: [urls[0]],
+    },
+  });
+  await storage.saveTask(task);
+  await scraper.resume(task);
+
+  const saved = await scraper.taskManager.getTask('task_f');
+  assert.equal(saved.progress.noteUrls.length, 3, 'resume 应补完搜索至 notesLimit=3（而不是沿用部分 1 条）');
+  assert.equal(task.progress.notesCollected, 3, '三篇笔记都应被采集');
+  assert.equal(task.status, 'completed');
 });
