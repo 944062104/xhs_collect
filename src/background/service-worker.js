@@ -238,14 +238,13 @@ export function install(deps = {}) {
 
   chromeApi.alarms.onAlarm.addListener(handleAlarm);
 
-  // Chrome MV3 消息通道适配器：真实 Chrome 中异步调用 sendResponse 必须【同步返回字面量 true】。
-  // 同时为了兼容单元测试 await handler(...)，若入参不是纯事件驱动，也挂载 Promise。
+  // Chrome MV3 消息通道适配器：真实 Chrome 中异步调用 sendResponse 必须【同步返回字面量 true】！
+  // 任何返回 Promise、undefined 或其它值的函数都会导致 Chrome 原生通信端口当即关闭，
+  // 从而在前端抛出: "The message port closed before a response was received."
   const listenerAdapter = (message, sender, sendResponse) => {
-    const p = handleMessage(message, sender, sendResponse);
-    // 在真实浏览器中，Chrome 只关心返回值是否为布尔值 true。
-    // 在 Node 单元测试中，测试框架直接对 listenerAdapter 执行了 await。
-    // 通过给 Promise 实例补充 .then 并返回带布尔值特性的对象或暴露底层方法：
-    return p;
+    const promise = handleMessage(message, sender, sendResponse);
+    listenerAdapter._lastPromise = promise;
+    return true; // 必须是字面量 true
   };
   chromeApi.runtime.onMessage.addListener(listenerAdapter);
 }

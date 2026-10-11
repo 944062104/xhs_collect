@@ -113,7 +113,13 @@ async function buildFixture() {
   const storage = makeStorage();
   const fake = makeFakeScraper(storage);
   install({ chromeApi, storage, scraper: fake });
-  const handler = chromeApi.runtime.onMessage._handlers[0];
+  const rawHandler = chromeApi.runtime.onMessage._handlers[0];
+  // 包装测试用的 handler：调用后自动 await 底层的 promise 保证测试同步取得结果
+  const handler = async (...args) => {
+    const res = rawHandler(...args);
+    if (rawHandler._lastPromise) await rawHandler._lastPromise;
+    return res;
+  };
   const alarmHandler = chromeApi.alarms.onAlarm._handlers[0];
   return { chromeApi, storage, fake, handler, alarmHandler };
 }
@@ -251,7 +257,11 @@ test('START_TASK 守卫：进行中拒绝并发 START_TASK（TASK_ALREADY_RUNNIN
     calls: pendingRun,
   };
   install({ chromeApi, storage, scraper: pendingFake });
-  const handler = chromeApi.runtime.onMessage._handlers[0];
+  const rawHandler = chromeApi.runtime.onMessage._handlers[0];
+  const handler = async (...args) => {
+    rawHandler(...args);
+    if (rawHandler._lastPromise) await rawHandler._lastPromise;
+  };
   await storage.saveConfig('apiKey', API_KEY);
 
   const r1 = makeSendResponse();

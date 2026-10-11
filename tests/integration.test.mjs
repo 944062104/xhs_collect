@@ -146,7 +146,11 @@ function buildFixture(scenario = { authWall: false, transientFailures: [] }) {
     sleep: noSleep,
   });
   install({ chromeApi, storage, scraper, getApiKey: () => 'test-key' });
-  const handler = chromeApi.runtime.onMessage._handlers[0];
+  const rawHandler = chromeApi.runtime.onMessage._handlers[0];
+  const handler = async (...args) => {
+    rawHandler(...args);
+    if (rawHandler._lastPromise) await rawHandler._lastPromise;
+  };
   const alarmHandler = chromeApi.alarms.onAlarm._handlers[0];
   return { chromeApi, storage, tabs, scraper, handler, alarmHandler };
 }
