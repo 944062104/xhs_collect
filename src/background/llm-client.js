@@ -14,6 +14,7 @@
 const API_URL = 'https://api.anthropic.com/v1/messages';
 const DEFAULT_MODEL = 'claude-3-5-sonnet-latest';
 const MAX_TOKENS = 4096;
+const REQUEST_TIMEOUT_MS = 60000; // 防止连接挂起导致 Service Worker 被无声卡死
 
 // ----------------------------------------------------------------------------
 // HTML 预清洗：去除 <script>/<style>/<svg> 块与 data: URI，降低 token 成本并提升鲁棒性。
@@ -166,42 +167,65 @@ export class LLMClient {
   }
 
   // 调用 Claude Messages API，返回模型输出的文本字符串。
+  // 网络/HTTP 错误会立即抛出（不会进入下方的 JSON 重试逻辑）。
   async _callApi(systemPrompt, userPrompt) {
-    const res = await fetch(API_URL, {
-      method: 'POST',
-      headers: {
-        'x-api-key': this.apiKey,
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: this.model,
-        max_tokens: MAX_TOKENS,
-        system: systemPrompt,
-        messages: [{ role: 'user', content: userPrompt }],
-      }),
-    });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    let res;
+    try {
+      res = await fetch(API_URL, {
+        method: 'POST',
+        headers: {
+          'x-api-key': this.apiKey,
+          'anthropic-version': '2023-06-01',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: this.model,
+          max_tokens: MAX_TOKENS,
+          system: systemPrompt,
+          messages: [{ role: 'user', content: userPrompt }],
+        }),
+        signal: controller.signal,
+      });
+    } catch (networkErr) {
+      throw new Error(`Claude API 网络请求失败：${networkErr?.message || networkErr}`);
+    } finally {
+      clearTimeout(timer);
+    }
 
     if (!res.ok) {
-      throw new Error(`Claude API 请求失败：HTTP ${res.status}`);
+      let detail = '';
+      try {
+        const errBody = await res.json();
+        if (errBody?.error?.message) detail = `: ${errBody.error.message}`;
+        else if (typeof errBody?.error === 'string') detail = `: ${errBody.error}`;
+      } catch {
+        /* 响应体非 JSON，忽略 */
+      }
+      throw new Error(`Claude API 请求失败：HTTP ${res.status}${detail}`);
     }
 
     const data = await res.json();
-    const text = data?.content?.[0]?.text;
+    const textBlock = Array.isArray(data?.content)
+      ? data.content.find((b) => b?.type === 'text')
+      : null;
+    const text = textBlock?.text;
     if (typeof text !== 'string') {
-      throw new Error('Claude API 返回格式异常：缺少 content[0].text');
+      throw new Error('Claude API 返回格式异常：缺少文本类型（type==="text"）的 content 块');
     }
     return text;
   }
 
-  // 调 API + 解析 JSON；解析失败时以更严格的系统提示重试一次。
+  // 调 API + 解析 JSON。仅当 API 调用【成功】但 JSON 解析失败时，
+  // 以更严格的系统提示重试一次；网络/HTTP 错误不会进入此分支（直接上抛）。
   async _extract(systemPrompt, userPrompt) {
+    const text = await this._callApi(systemPrompt, userPrompt);
     try {
-      const text = await this._callApi(systemPrompt, userPrompt);
       return extractJson(text);
-    } catch (err) {
+    } catch {
       const strictText = await this._callApi(systemPrompt + STRICT_RETRY_NOTE, userPrompt);
-      return extractJson(strictText);
+      return extractJson(strictText); // 仍失败则抛出（已是解析错误，不再重试，避免死循环）
     }
   }
 

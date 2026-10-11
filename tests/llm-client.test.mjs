@@ -263,3 +263,60 @@ test('extractNoteList：模型返回围栏包裹 JSON 也能端到端解析', as
     restoreFetch();
   }
 });
+
+// ----------------------------------------------------------------------------
+// 鲁棒性回归：网络/HTTP 错误不应进入 JSON 重试分支；content 块按 type 选取。
+// ----------------------------------------------------------------------------
+
+test('HTTP 错误（含 error body）立即抛出且不重试', async () => {
+  let calls = 0;
+  installFetch(() => {
+    calls += 1;
+    return {
+      ok: false,
+      status: 429,
+      json: async () => ({ error: { type: 'rate_limit_error', message: 'rate limited' } }),
+    };
+  });
+  try {
+    const client = new LLMClient('sk-test');
+    await assert.rejects(() => client.extractNoteList(EXAMPLE_HTML), /HTTP 429.*rate limited/i);
+    // 关键：网络/HTTP 错误不应进入 JSON 重试分支（只调用 1 次，避免对 429 二次打击）
+    assert.equal(calls, 1, 'HTTP 错误不应触发重试');
+  } finally {
+    restoreFetch();
+  }
+});
+
+test('网络错误立即抛出且不重试', async () => {
+  let calls = 0;
+  installFetch(() => {
+    calls += 1;
+    throw new Error('ECONNRESET');
+  });
+  try {
+    const client = new LLMClient('sk-test');
+    await assert.rejects(() => client.extractNoteList(EXAMPLE_HTML), /网络请求失败/i);
+    assert.equal(calls, 1, '网络错误不应触发重试');
+  } finally {
+    restoreFetch();
+  }
+});
+
+test('content 中首个文本块（type==="text"）被选中，忽略非文本块', async () => {
+  installFetch(() =>
+    jsonResponse({
+      content: [
+        { type: 'thinking', text: '让我想想' },
+        { type: 'text', text: JSON.stringify([{ title: 'x', url: '/e', author: 'a', likes: 1, type: '图文' }]) },
+      ],
+    })
+  );
+  try {
+    const client = new LLMClient('sk-test');
+    const list = await client.extractNoteList(EXAMPLE_HTML);
+    assert.equal(list[0].title, 'x');
+  } finally {
+    restoreFetch();
+  }
+});
