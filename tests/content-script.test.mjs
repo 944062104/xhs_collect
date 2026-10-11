@@ -8,7 +8,7 @@
 // 覆盖要点：
 //  1. findFirstElement 的多级备选顺序：CSS 优先 → XPath → 文本包含（证明顺序）。
 //  2. steppedScroll 的分段拟人滚动：累积滚动量 ≈ distance，多次调用 scrollBy，最终 resolve。
-//  3. onMessage 分发各动作：click / getHTML / waitFor / scroll / closeModal / eval
+//  3. onMessage 分发各动作：click / type / getHTML / waitFor / scroll / closeModal / eval
 //     均返回 { ok, data?, error? } 形状，错误分支正确。
 
 import { test } from 'node:test';
@@ -47,6 +47,13 @@ class MockKeyboardEvent {
   }
 }
 
+class MockEvent {
+  constructor(type, opts = {}) {
+    this.type = type;
+    this.bubbles = !!opts.bubbles;
+  }
+}
+
 const mockWindow = {
   scrollBy(x, y) {
     docState.scrollTotal += y;
@@ -58,6 +65,7 @@ const mockWindow = {
     return true;
   },
   KeyboardEvent: MockKeyboardEvent,
+  Event: MockEvent,
 };
 
 // 文本匹配用的 XPath 形如：//*[contains(normalize-space(.), "needle")]
@@ -99,10 +107,15 @@ function makeElement(tag = 'div', props = {}) {
     textContent: props.textContent != null ? props.textContent : '',
     outerHTML: props.outerHTML != null ? props.outerHTML : `<${tag}>${(props.textContent || '')}</${tag}>`,
     type: props.type != null ? props.type : undefined,
+    value: props.value != null ? props.value : '',
     _clicked: false,
     click() {
       this._clicked = true;
       docState.lastClicked = this;
+    },
+    dispatchEvent(evt) {
+      docState.dispatched.push(evt);
+      return true;
     },
     getAttribute(name) {
       return props[name] != null ? props[name] : null;
@@ -131,6 +144,7 @@ const sandbox = {
   clearTimeout,
   console,
   KeyboardEvent: MockKeyboardEvent,
+  Event: MockEvent,
 };
 vm.createContext(sandbox);
 
@@ -309,4 +323,25 @@ test('onMessage 未知动作 → { ok: false, error: UNKNOWN_ACTION }', async ()
   const resp = await response;
   assert.equal(resp.ok, false);
   assert.equal(resp.error, 'UNKNOWN_ACTION');
+});
+
+test('onMessage type：命中输入框 → 写入 value 并派发 input/change 事件 → { ok: true }', async () => {
+  resetDoc();
+  const input = makeElement('input');
+  docState.cssMatches['#search'] = input;
+  const { response } = dispatch({ action: 'type', selectors: ['#search'], text: '护肤推荐' });
+  const resp = await response;
+  assert.equal(resp.ok, true);
+  assert.equal(input.value, '护肤推荐', '应把文本写入输入框 value');
+  const types = docState.dispatched.map((e) => e.type);
+  assert.ok(types.includes('input'), '应派发 input 事件');
+  assert.ok(types.includes('change'), '应派发 change 事件');
+});
+
+test('onMessage type：未命中 → { ok: false, error: SELECTOR_NOT_FOUND }', async () => {
+  resetDoc();
+  const { response } = dispatch({ action: 'type', selectors: ['#missing'], text: 'x' });
+  const resp = await response;
+  assert.equal(resp.ok, false);
+  assert.equal(resp.error, 'SELECTOR_NOT_FOUND');
 });

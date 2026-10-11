@@ -7,8 +7,8 @@
 // 对外契约（被 background service worker 通过 chrome.runtime.sendMessage 调用）：
 //   - 接收消息 { action, ...payload }，并通过 sendResponse 回调回复
 //     { ok: boolean, data?: any, error?: string }
-//   - 支持的 action：waitFor / click / scroll / getHTML / getType / getText /
-//     closeModal / eval
+//   - 支持的 action：waitFor / click / scroll / type / getHTML / getType /
+//     getText / closeModal / eval
 // ============================================================================
 
 // 与 XPathResult.FIRST_ORDERED_NODE_TYPE 等价（避免在沙箱/老环境中依赖全局常量）。
@@ -200,6 +200,31 @@ function handleGetText(msg, sendResponse) {
   return false;
 }
 
+// type：在输入框中输入文本（模拟用户输入，触发 input/change 事件以便框架感知）。
+function handleType(msg, sendResponse) {
+  var el = findFirstElement(resolveSelectors(msg));
+  if (!el) {
+    sendResponse({ ok: false, error: 'SELECTOR_NOT_FOUND' });
+    return false;
+  }
+  var text = typeof msg.text === 'string' ? msg.text : '';
+  try {
+    if ('value' in el) {
+      el.value = text;
+    } else if (typeof el.setAttribute === 'function') {
+      el.setAttribute('value', text);
+    }
+    if (typeof el.dispatchEvent === 'function') {
+      try { el.dispatchEvent(new window.Event('input', { bubbles: true })); } catch (e) { /* 忽略 */ }
+      try { el.dispatchEvent(new window.Event('change', { bubbles: true })); } catch (e) { /* 忽略 */ }
+    }
+    sendResponse({ ok: true });
+  } catch (e) {
+    sendResponse({ ok: false, error: String(e) });
+  }
+  return false;
+}
+
 // closeModal：优先点击遮罩/关闭按钮，并派发 Escape 键盘事件兜底。
 function handleCloseModal(msg, sendResponse) {
   var maskCandidates = [
@@ -255,6 +280,8 @@ if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage)
         return handleScroll(message, sendResponse);
       case 'getHTML':
         return handleGetHTML(message, sendResponse);
+      case 'type':
+        return handleType(message, sendResponse);
       case 'getType':
       case 'getText':
         return handleGetText(message, sendResponse);
