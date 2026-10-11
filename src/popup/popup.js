@@ -9,12 +9,6 @@
 // 每篇笔记默认采集评论数（comments 开关开启时使用）。
 const DEFAULT_COMMENTS_PER_NOTE = 20;
 
-// 采集数量可选档位。
-const NOTE_LIMITS = [10, 20, 50, 100];
-
-// 爬取延迟可选档位（毫秒）。
-const CRAWL_DELAYS = [0, 500, 1000, 2000];
-
 // ---------------------------------------------------------------------------
 // 纯函数（TDD 目标，可在 Node 中测试；无任何浏览器依赖）
 // ---------------------------------------------------------------------------
@@ -190,7 +184,18 @@ function initPopup() {
   function pollOnce() {
     if (taskId == null) return;
     chrome.runtime.sendMessage({ type: 'GET_PROGRESS', taskId }, (resp) => {
-      if (chrome.runtime.lastError || !resp || !resp.ok) return; // 任务丢失时静默忽略
+      // 任务丢失（NO_TASK）或通信异常：停止轮询并复位 UI，避免无限轮询与界面卡死。
+      if (chrome.runtime.lastError || !resp || !resp.ok) {
+        stopPolling();
+        setRunningUI(false);
+        if (chrome.runtime.lastError || !resp) {
+          showError('与后台通信失败，请刷新页面重试');
+        } else if (resp.error === 'NO_TASK') {
+          showError('任务已不存在，请重新采集');
+          setProgress(0, '任务丢失');
+        }
+        return;
+      }
       const pct = progressToPercent(resp.progress);
       setProgress(pct, statusLabel(resp.status) + `（已采集 ${resp.notesCount ?? 0} 篇）`);
       if (['completed', 'failed', 'cancelled'].includes(resp.status)) {
@@ -247,7 +252,11 @@ function initPopup() {
 
   function onCancel() {
     if (taskId == null) return;
-    chrome.runtime.sendMessage({ type: 'CANCEL_TASK', taskId }, () => {
+    chrome.runtime.sendMessage({ type: 'CANCEL_TASK', taskId }, (resp) => {
+      if (chrome.runtime.lastError || !resp || !resp.ok) {
+        showError('取消失败：' + (resp ? resp.error : '通信错误'));
+        return;
+      }
       stopPolling();
       setRunningUI(false);
       setProgress(0, '已取消');
@@ -255,12 +264,8 @@ function initPopup() {
   }
 
   // --- 导出：经由 SW 序列化后在本地下载（纯前端下载） ---
-  function downloadString(filename, mime, text) {
-    if (chrome && chrome.downloads && chrome.downloads.download) {
-      const dataUrl = 'data:' + mime + ';charset=utf-8,' + encodeURIComponent(text);
-      chrome.downloads.download({ url: dataUrl, filename, saveAs: true });
-      return;
-    }
+  // Blob URL 兜底：当 chrome.downloads 不可用或下载报错时使用。
+  function fallbackBlobDownload(filename, mime, text) {
     const blob = new Blob([text], { type: mime });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -270,6 +275,18 @@ function initPopup() {
     a.click();
     document.body.removeChild(a);
     setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  function downloadString(filename, mime, text) {
+    if (chrome && chrome.downloads && chrome.downloads.download) {
+      const dataUrl = 'data:' + mime + ';charset=utf-8,' + encodeURIComponent(text);
+      chrome.downloads.download({ url: dataUrl, filename, saveAs: true }, () => {
+        // 下载失败（含 data: URL 策略拦截）时回退到 Blob 方式，避免静默失败。
+        if (chrome.runtime.lastError) fallbackBlobDownload(filename, mime, text);
+      });
+      return;
+    }
+    fallbackBlobDownload(filename, mime, text);
   }
 
   function onExport(format) {
