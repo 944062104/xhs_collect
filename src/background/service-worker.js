@@ -15,7 +15,7 @@ import { TaskManager } from './task-manager.js';
 import { Scraper } from './scraper.js';
 import { LLMClient } from './llm-client.js';
 
-// 模块级重入守卫：同一时刻只允许一个 run / resume 在执行（防止闹钟与 START_TASK 并发）。
+// 模块级重入守卫：同一时刻只允许一个 run / resume 在执行（防止闹钟续传与 START_TASK 并发，也防止两个 START_TASK 叠跑）。
 let activeRun = null;
 
 // 由 install() 注入（浏览器中来自全局 chrome / 真实存储，测试中来自 deps）。
@@ -51,7 +51,8 @@ function resumeRunning() {
 
 function handleAlarm(alarm) {
   if (!alarm || alarm.name !== 'keepalive') return;
-  // 轻量保活 ping：触发一次无副作用的运行时调用，以延长 SW 生命周期。
+  // 轻量保活 ping：触发一次无副作用的运行时调用。注意：MV3 中事件处理函数返回后 SW 仍可能休眠，
+  // 因此真正可靠的保活网是「闹钟周期性唤醒 → resumeRunning」，本 ping 仅作辅助。
   try {
     chromeApi.runtime?.getPlatformInfo?.(() => {});
   } catch (_) {
@@ -66,6 +67,12 @@ async function startTask(msg, sendResponse) {
     sendResponse({ ok: false, error: 'NO_API_KEY' });
     return;
   }
+  // 重入守卫：若已有采集在进行，拒绝新任务（单任务模型，避免两条 Scraper 并发）。
+  if (activeRun) {
+    sendResponse({ ok: false, error: 'TASK_ALREADY_RUNNING' });
+    return;
+  }
+
   const task = await taskManager.createTask(msg.keyword, msg.config || {});
   // 立即回复 Popup，采集在后台异步进行（不阻塞消息通道）。
   sendResponse({ ok: true, taskId: task.id });
@@ -118,6 +125,7 @@ function csvField(value) {
   return s;
 }
 
+// 注：列名 commentsCount 并非 note 上的独立字段，而是由 note.commentList 的长度派生（见 toCsv）。
 const CSV_COLUMNS = ['id', 'taskId', 'url', 'title', 'content', 'author', 'likes', 'tags', 'commentsCount', 'collectedAt'];
 
 function toCsv(notes) {

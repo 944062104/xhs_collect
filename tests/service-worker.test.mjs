@@ -233,6 +233,41 @@ test('START_TASK（无 apiKey）回复 NO_API_KEY 且不创建任务', async () 
 });
 
 // ---------------------------------------------------------------------------
+// (h) START_TASK 守卫：已有进行中的任务时拒绝新的 START_TASK（TASK_ALREADY_RUNNING）
+// ---------------------------------------------------------------------------
+
+test('START_TASK 守卫：进行中拒绝并发 START_TASK（TASK_ALREADY_RUNNING）', async () => {
+  const chromeApi = makeMockChrome();
+  const storage = makeStorage();
+  // run 返回可控 Promise（测试结束前手动 resolve），使 activeRun 持续占用以模拟「采集进行中」。
+  const pendingRun = { calls: [], resolver: null };
+  const pendingFake = {
+    run: (task) => {
+      pendingRun.calls.push(task);
+      return new Promise((resolve) => { pendingRun.resolver = resolve; });
+    },
+    resume: async () => {},
+    cancel: async () => {},
+    calls: pendingRun,
+  };
+  install({ chromeApi, storage, scraper: pendingFake });
+  const handler = chromeApi.runtime.onMessage._handlers[0];
+  await storage.saveConfig('apiKey', API_KEY);
+
+  const r1 = makeSendResponse();
+  await handler({ type: 'START_TASK', keyword: '护肤' }, {}, r1);
+  assert.equal(r1.last().ok, true, '首个 START_TASK 应成功');
+
+  const r2 = makeSendResponse();
+  await handler({ type: 'START_TASK', keyword: '美妆' }, {}, r2);
+  assert.equal(r2.last().ok, false, '并发 START_TASK 应被拒绝');
+  assert.equal(r2.last().error, 'TASK_ALREADY_RUNNING');
+  assert.equal(pendingRun.calls.length, 1, '不应启动第二个 run');
+
+  pendingRun.resolver && pendingRun.resolver(); // 释放守卫，避免影响其它测试
+});
+
+// ---------------------------------------------------------------------------
 // (d) CANCEL_TASK → fake.cancel(taskId)，回复 ok:true
 // ---------------------------------------------------------------------------
 
