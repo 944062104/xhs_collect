@@ -125,6 +125,8 @@ function initPopup() {
     exportCsvBtn: $('exportCsvBtn'),
     advancedToggle: $('advancedToggle'),
     advancedPanel: $('advancedPanel'),
+    apiBase: $('apiBase'),
+    model: $('model'),
     apiKey: $('apiKey'),
     comments: $('comments'),
     delay: $('delay'),
@@ -138,7 +140,9 @@ function initPopup() {
   // --- 配置持久化（chrome.storage.local） ---
   function loadConfig() {
     if (!chrome || !chrome.storage || !chrome.storage.local) return;
-    chrome.storage.local.get(['apiKey', 'comments', 'crawlDelay', 'limit'], (cfg) => {
+    chrome.storage.local.get(['apiBase', 'model', 'apiKey', 'comments', 'crawlDelay', 'limit'], (cfg) => {
+      if (cfg.apiBase && els.apiBase) els.apiBase.value = cfg.apiBase;
+      if (cfg.model && els.model) els.model.value = cfg.model;
       if (cfg.apiKey) els.apiKey.value = cfg.apiKey;
       if (typeof cfg.comments === 'boolean') els.comments.checked = cfg.comments;
       if (typeof cfg.limit === 'number') els.limit.value = String(cfg.limit);
@@ -152,6 +156,8 @@ function initPopup() {
   function saveConfig() {
     if (!chrome || !chrome.storage || !chrome.storage.local) return;
     chrome.storage.local.set({
+      apiBase: els.apiBase ? els.apiBase.value.trim() : '',
+      model: els.model ? els.model.value.trim() : '',
       apiKey: els.apiKey.value.trim(),
       comments: els.comments.checked,
       crawlDelay,
@@ -330,6 +336,8 @@ function initPopup() {
   els.cancelBtn.addEventListener('click', onCancel);
   els.exportJsonBtn.addEventListener('click', () => onExport('json'));
   els.exportCsvBtn.addEventListener('click', () => onExport('csv'));
+  if (els.apiBase) els.apiBase.addEventListener('change', saveConfig);
+  if (els.model) els.model.addEventListener('change', saveConfig);
   els.apiKey.addEventListener('change', saveConfig);
   els.comments.addEventListener('change', saveConfig);
   els.limit.addEventListener('change', saveConfig);
@@ -350,7 +358,9 @@ function initPopup() {
   // 经验库重置（清除本地存储的 API Key 与设置）
   els.resetBtn.addEventListener('click', () => {
     if (chrome && chrome.storage && chrome.storage.local) {
-      chrome.storage.local.remove(['apiKey', 'comments', 'crawlDelay', 'limit'], () => {
+      chrome.storage.local.remove(['apiBase', 'model', 'apiKey', 'comments', 'crawlDelay', 'limit'], () => {
+        if (els.apiBase) els.apiBase.value = '';
+        if (els.model) els.model.value = '';
         els.apiKey.value = '';
         els.comments.checked = false;
         els.delay.value = '0';

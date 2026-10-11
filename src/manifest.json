@@ -5,7 +5,7 @@
   "minimum_chrome_version": "102",
   "description": "基于关键词自动采集小红书笔记与评论并导出 JSON/CSV",
   "permissions": ["tabs", "activeTab", "storage", "alarms", "downloads"],
-  "host_permissions": ["*://*.xiaohongshu.com/*"],
+  "host_permissions": ["*://*.xiaohongshu.com/*", "https://*/*"],
   "background": {
     "service_worker": "background/service-worker.js",
     "type": "module"

@@ -25,9 +25,10 @@ let taskManager = null;
 let scraper = null; // 注入的替身；浏览器中留空，按需懒构造
 let getApiKey = null;
 
-// 浏览器环境懒构造 Scraper：每次任务都用【最新】存储的 apiKey 与 chrome.tabs。
-function makeScraper(apiKey) {
-  const llm = new LLMClient(apiKey);
+// 浏览器环境懒构造 Scraper：每次任务都用【最新】存储的 apiKey、apiBase、model 与 chrome.tabs。
+function makeScraper(llmConfig) {
+  const config = typeof llmConfig === 'object' && llmConfig !== null ? llmConfig : { apiKey: llmConfig };
+  const llm = new LLMClient(config);
   return new Scraper({ storage, llm, patterns: null, tabs: chromeApi.tabs });
 }
 
@@ -62,7 +63,8 @@ function handleAlarm(alarm) {
 }
 
 async function startTask(msg, sendResponse) {
-  const apiKey = await getApiKey();
+  const llmConfig = await resolveLlmConfig();
+  const apiKey = (typeof getApiKey === 'function' ? await getApiKey() : '') || llmConfig.apiKey;
   if (!apiKey) {
     sendResponse({ ok: false, error: 'NO_API_KEY' });
     return;
@@ -78,7 +80,7 @@ async function startTask(msg, sendResponse) {
   sendResponse({ ok: true, taskId: task.id });
 
   activeRun = task.id;
-  const s = scraper ?? makeScraper(apiKey);
+  const s = scraper ?? makeScraper({ ...llmConfig, apiKey });
   s.run(task)
     .catch((err) => console.error('[xhs] 任务执行失败:', err))
     .finally(() => {
@@ -88,7 +90,9 @@ async function startTask(msg, sendResponse) {
 
 async function cancelTask(msg, sendResponse) {
   try {
-    await (scraper ?? makeScraper(await getApiKey())).cancel(msg.taskId);
+    const llmConfig = await resolveLlmConfig();
+    const apiKey = (typeof getApiKey === 'function' ? await getApiKey() : '') || llmConfig.apiKey;
+    await (scraper ?? makeScraper({ ...llmConfig, apiKey })).cancel(msg.taskId);
     sendResponse({ ok: true });
   } catch (err) {
     sendResponse({ ok: false, error: err?.message ?? 'CANCEL_FAILED' });
@@ -184,19 +188,35 @@ async function handleMessage(message, _sender, sendResponse) {
   return true;
 }
 
-// 统一读取 API Key：优先从 chrome.storage.local（Popup 写入处），兜底从 IndexedDB
-async function resolveApiKey() {
+// 统一读取 LLM 配置：优先从 chrome.storage.local（Popup 写入处），兜底从 IndexedDB
+async function resolveLlmConfig() {
+  let apiKey = '';
+  let apiBase = '';
+  let model = '';
   if (chromeApi?.storage?.local?.get) {
     try {
       const cfg = await new Promise((resolve) => {
-        chromeApi.storage.local.get(['apiKey'], resolve);
+        chromeApi.storage.local.get(['apiKey', 'apiBase', 'model'], resolve);
       });
-      if (cfg && cfg.apiKey) return cfg.apiKey;
+      if (cfg) {
+        apiKey = cfg.apiKey || '';
+        apiBase = cfg.apiBase || '';
+        model = cfg.model || '';
+      }
     } catch (_) {
       // 忽略存储读取异常
     }
   }
-  return storage.getConfig('apiKey');
+  if (!apiKey) {
+    apiKey = await storage.getConfig('apiKey');
+  }
+  return { apiKey, apiBase, model };
+}
+
+// 供向下兼容与外部依赖注入
+async function resolveApiKey() {
+  const cfg = await resolveLlmConfig();
+  return cfg.apiKey;
 }
 
 export function install(deps = {}) {

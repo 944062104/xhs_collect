@@ -158,12 +158,36 @@ const STRICT_RETRY_NOTE = '\n\n【重试】严格要求：仅输出纯 JSON，�
 // ----------------------------------------------------------------------------
 
 export class LLMClient {
-  constructor(apiKey, model = DEFAULT_MODEL) {
+  constructor(apiKeyOrOpts, modelOpt = DEFAULT_MODEL) {
+    let apiKey = '';
+    let model = DEFAULT_MODEL;
+    let apiBase = '';
+
+    if (typeof apiKeyOrOpts === 'object' && apiKeyOrOpts !== null) {
+      apiKey = apiKeyOrOpts.apiKey;
+      model = apiKeyOrOpts.model || DEFAULT_MODEL;
+      apiBase = apiKeyOrOpts.apiBase || apiKeyOrOpts.baseUrl || '';
+    } else {
+      apiKey = apiKeyOrOpts;
+      model = modelOpt || DEFAULT_MODEL;
+    }
+
     if (!apiKey || typeof apiKey !== 'string') {
       throw new Error('LLMClient 需要一个非空的 apiKey');
     }
     this.apiKey = apiKey;
     this.model = model;
+
+    // 格式化 API 地址：支持传入完整 /v1/messages，或只传根域名自动补全
+    if (apiBase) {
+      let trimmed = apiBase.trim().replace(/\/+$/, '');
+      if (!trimmed.endsWith('/v1/messages')) {
+        trimmed = trimmed.endsWith('/v1') ? `${trimmed}/messages` : `${trimmed}/v1/messages`;
+      }
+      this.apiUrl = trimmed;
+    } else {
+      this.apiUrl = API_URL;
+    }
   }
 
   // 调用 Claude Messages API，返回模型输出的文本字符串。
@@ -173,7 +197,7 @@ export class LLMClient {
     const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
     let res;
     try {
-      res = await fetch(API_URL, {
+      res = await fetch(this.apiUrl, {
         method: 'POST',
         headers: {
           'x-api-key': this.apiKey,

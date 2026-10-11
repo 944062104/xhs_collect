@@ -64,6 +64,15 @@ test('构造函数：apiKey 为空时抛错', () => {
   assert.equal(c.apiKey, 'sk-test');
 });
 
+test('构造函数：支持配置自定义 apiBase / baseUrl 与 model', () => {
+  const client1 = new LLMClient({ apiKey: 'sk-123', apiBase: 'https://api.my-proxy.com', model: 'claude-3-5-haiku-20241022' });
+  assert.equal(client1.apiUrl, 'https://api.my-proxy.com/v1/messages');
+  assert.equal(client1.model, 'claude-3-5-haiku-20241022');
+
+  const client2 = new LLMClient({ apiKey: 'sk-123', apiBase: 'https://api.my-proxy.com/v1/messages/' });
+  assert.equal(client2.apiUrl, 'https://api.my-proxy.com/v1/messages');
+});
+
 test('cleanHtml：去除 <script>/<style>/<svg> 与 data: URI', () => {
   const dirty = `
     <style>.a{color:red}</style>
