@@ -1,0 +1,58 @@
+{
+  "xiaohongshu.com": {
+    "platform": "小红书网页版",
+    "version": "1.0.0",
+    "meta": {
+      "homeUrl": "https://www.xiaohongshu.com",
+      "searchUrlTemplate": "https://www.xiaohongshu.com/search_result?keyword={keyword}"
+    },
+    "patterns": {
+      "interaction": {
+        "openDetailMethod": "click_card",
+        "closeDetailMethod": "click_mask_or_esc",
+        "scrollStyle": "human_stepped"
+      },
+      "traps": {
+        "loginDialog": {
+          "detectSelector": ".login-container, .modal-mask",
+          "strategy": "check_user_auth_or_prompt"
+        },
+        "rateLimit": {
+          "code": 300031,
+          "cooldownSeconds": 300
+        }
+      },
+      "selectors": {
+        "search": {
+          "input": ["#search-input", "input.search-input", "input[placeholder*='搜索']"],
+          "searchButton": [".search-btn", "button[type='submit']"],
+          "feedsContainer": [".feeds-page", ".search-result-feeds", "section[class*='feed']"],
+          "noteCard": [".note-item", "section.note-card", "div[data-note-id]"],
+          "noteLink": [".note-item a.cover", "a[href*='/explore/']"]
+        },
+        "noteDetail": {
+          "container": ["#noteContainer", ".note-detail-mask", ".note-container"],
+          "title": [".note-title", "#detail-title", "h1[class*='title']"],
+          "content": [".note-content", ".content-text", "[class*='content-desc']"],
+          "commentSection": [".comments-container", ".comment-wrapper"],
+          "commentItem": [".comment-item", "div[class*='comment-item']"]
+        }
+      }
+    },
+    "recipes": {
+      "searchAndCollect": [
+        { "action": "navigate", "url": "{searchUrlTemplate}" },
+        { "action": "waitFor", "selectorKey": "search.feedsContainer", "timeout": 10000 },
+        { "action": "loopScroll", "count": "{scrollTimes}", "style": "human_stepped" },
+        { "action": "extractBatch", "selectorKey": "search.feedsContainer", "extractor": "llm.extractNoteList" }
+      ],
+      "collectNoteDetail": [
+        { "action": "click", "selectorKey": "search.noteLink", "targetIndex": "{index}" },
+        { "action": "waitFor", "selectorKey": "noteDetail.container", "timeout": 8000 },
+        { "action": "extract", "selectorKey": "noteDetail.container", "extractor": "llm.extractNoteDetail" },
+        { "action": "extract", "selectorKey": "noteDetail.commentSection", "extractor": "llm.extractComments" },
+        { "action": "closeModal", "strategy": "click_mask_or_esc" }
+      ]
+    }
+  }
+}

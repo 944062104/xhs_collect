@@ -1,0 +1,20 @@
+{
+  "manifest_version": 3,
+  "name": "小红书采集助手",
+  "version": "1.0.0",
+  "description": "基于关键词自动采集小红书笔记与评论并导出 JSON/CSV",
+  "permissions": ["tabs", "activeTab", "storage", "alarms", "downloads"],
+  "host_permissions": ["*://*.xiaohongshu.com/*"],
+  "background": {
+    "service_worker": "background/service-worker.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://*.xiaohongshu.com/*"],
+      "js": ["content/content-script.js"]
+    }
+  ],
+  "action": {
+    "default_popup": "popup/index.html"
+  }
+}
