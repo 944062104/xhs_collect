@@ -8,8 +8,7 @@
     },
     "patterns": {
       "interaction": {
-        "openDetailMethod": "click_card",
-        "closeDetailMethod": "click_mask_or_esc",
+        "openDetailMethod": "navigate_url",
         "scrollStyle": "human_stepped"
       },
       "traps": {

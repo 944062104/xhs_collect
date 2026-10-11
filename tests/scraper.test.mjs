@@ -383,3 +383,36 @@ test('(i3) _send 对通信层抛错（瞬态）重试后成功', async () => {
   assert.equal(attempts, 2, '通信抛错应重试一次后成功');
   assert.equal(res.ok, true);
 });
+
+test('(j) 详情采集采用独立 URL 导航时，不再发送多余的 closeModal 消息', async () => {
+  const sentActions = [];
+  const tabs = {
+    create: async () => ({ id: 10 }),
+    update: async () => {},
+    sendMessage: async (id, msg) => {
+      sentActions.push(msg.action);
+      if (msg.action === 'getHTML') return { ok: true, data: '<div>mock</div>' };
+      return { ok: true };
+    },
+  };
+  const llm = makeLlm();
+  const { scraper, storage } = makeScraper({ tabs, llm });
+
+  const task = baseTask('task_j', {
+    progress: {
+      phase: 'searching',
+      notesCollected: 0,
+      notesTotal: 1,
+      currentNoteIndex: -1,
+      commentsCollected: 0,
+      scrollCount: 1,
+      noteUrls: ['https://xhs.com/explore/1'],
+    },
+    config: { notesLimit: 1 },
+  });
+  await storage.saveTask(task);
+  await scraper._detailPhase(task);
+
+  assert.equal(sentActions.includes('closeModal'), false, '直接 URL 导航不应发送 closeModal');
+});
+

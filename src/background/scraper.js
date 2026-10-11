@@ -327,12 +327,6 @@ export class Scraper {
         await this.storage.saveTask(task);
         continue;
       }
-      // 关闭弹层：属于清理步骤，失败不应算作笔记采集失败。
-      try {
-        if (tabId != null) await this._send(tabId, { action: 'closeModal' });
-      } catch (closeErr) {
-        console.warn(`closeModal 失败 (index=${i}):`, closeErr?.message ?? closeErr);
-      }
       await this._randomPause(task);
     }
   }
