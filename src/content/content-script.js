@@ -13,6 +13,8 @@
 
 // 与 XPathResult.FIRST_ORDERED_NODE_TYPE 等价（避免在沙箱/老环境中依赖全局常量）。
 var XPATH_FIRST_NODE = 9;
+// 与 XPathResult.ORDERED_NODE_SNAPSHOT_TYPE 等价，用于取文本包含命中的多个节点。
+var XPATH_SNAPSHOT = 7;
 
 // ----------------------------------------------------------------------------
 // 多级备选选择器探测：CSS → XPath → 文本包含
@@ -22,10 +24,7 @@ var XPATH_FIRST_NODE = 9;
 //   2) XPath：把 sel 当作 XPath 表达式，document.evaluate(...)
 //   3) 文本包含：找出 textContent 包含 sel 的元素（用 XPath contains 实现）
 // 返回第一个命中的元素；都没有则 null。
-//
-// options.timeout 在此做单轮即时探测（不阻塞）；超时轮询由 waitFor 负责。
-function findFirstElement(selectors, options) {
-  options = options || {};
+function findFirstElement(selectors) {
   var list = Array.isArray(selectors) ? selectors : [selectors];
   for (var i = 0; i < list.length; i++) {
     var el = trySelect(String(list[i]));
@@ -56,12 +55,15 @@ function trySelect(sel) {
     // 非 XPath 表达式会抛错，忽略后退回文本匹配。
   }
 
-  // 3) 文本包含（用 XPath contains 兜底，避免遍历整棵 DOM）
+  // 3) 文本包含（用 XPath contains 兜底，避免遍历整棵 DOM）。
+  // 取【最内层】命中元素（snapshot 中最后一个 = 文档序最深），避免返回包裹整段的祖先元素。
   try {
     if (typeof document.evaluate === 'function') {
       var textXpath = "//*[contains(normalize-space(.), " + JSON.stringify(sel) + ")]";
-      var tres = document.evaluate(textXpath, document, null, XPATH_FIRST_NODE, null);
-      if (tres && tres.singleNodeValue) return tres.singleNodeValue;
+      var tres = document.evaluate(textXpath, document, null, XPATH_SNAPSHOT, null);
+      if (tres && tres.snapshotLength > 0) {
+        return tres.snapshotItem(tres.snapshotLength - 1);
+      }
     }
   } catch (e) {
     // 忽略
@@ -82,26 +84,30 @@ function steppedScroll(distance, duration) {
   var remaining = distance;
   var absTotal = Math.abs(distance);
 
-  return new Promise(function (resolve) {
+  return new Promise(function (resolve, reject) {
     var i = 0;
     function step() {
-      if (i >= steps || absTotal === 0) {
-        resolve();
-        return;
+      try {
+        if (i >= steps || absTotal === 0) {
+          resolve();
+          return;
+        }
+        // 随机抖动 ±15%，模拟非匀速的人类滚动。
+        var jitter = 1 + (Math.random() * 0.3 - 0.15);
+        var delta = baseStep * jitter;
+        // 防止溢出剩余位移；最后一步精确补齐，保证累积位移 == distance。
+        if (i === steps - 1 || Math.abs(delta) > Math.abs(remaining)) delta = remaining;
+        remaining -= delta;
+        if (typeof window.scrollBy === 'function') {
+          window.scrollBy(0, delta);
+        } else if (typeof window.scrollTo === 'function') {
+          window.scrollTo(0, (window.scrollY || 0) + delta);
+        }
+        i += 1;
+        setTimeout(step, duration / steps);
+      } catch (e) {
+        reject(e);
       }
-      // 随机抖动 ±15%，模拟非匀速的人类滚动。
-      var jitter = 1 + (Math.random() * 0.3 - 0.15);
-      var delta = baseStep * jitter;
-      // 防止溢出剩余位移；最后一步精确补齐，保证累积位移 == distance。
-      if (i === steps - 1 || Math.abs(delta) > Math.abs(remaining)) delta = remaining;
-      remaining -= delta;
-      if (typeof window.scrollBy === 'function') {
-        window.scrollBy(0, delta);
-      } else if (typeof window.scrollTo === 'function') {
-        window.scrollTo(0, (window.scrollY || 0) + delta);
-      }
-      i += 1;
-      setTimeout(step, duration / steps);
     }
     step();
   });
@@ -200,6 +206,35 @@ function handleGetText(msg, sendResponse) {
   return false;
 }
 
+// 兼容 React 受控组件的赋值：React 重写了 input/textarea 的 value 描述符，
+// 直接 `el.value = x` 不会触发其 onChange；必须通过原生原型 setter 写入。
+function setValue(el, text) {
+  var proto =
+    (typeof window !== 'undefined' && (window.HTMLInputElement || window.HTMLTextAreaElement)) || null;
+  var setter = null;
+  if (proto && proto.prototype) {
+    var desc = Object.getOwnPropertyDescriptor(proto.prototype, 'value');
+    if (desc && typeof desc.set === 'function') setter = desc.set;
+  }
+  if (setter) {
+    try {
+      setter.call(el, text);
+      return;
+    } catch (e) {
+      /* 退化到普通赋值 */
+    }
+  }
+  if ('value' in el) {
+    try {
+      el.value = text;
+      return;
+    } catch (e) {
+      /* 忽略 */
+    }
+  }
+  if (typeof el.setAttribute === 'function') el.setAttribute('value', text);
+}
+
 // type：在输入框中输入文本（模拟用户输入，触发 input/change 事件以便框架感知）。
 function handleType(msg, sendResponse) {
   var el = findFirstElement(resolveSelectors(msg));
@@ -209,11 +244,7 @@ function handleType(msg, sendResponse) {
   }
   var text = typeof msg.text === 'string' ? msg.text : '';
   try {
-    if ('value' in el) {
-      el.value = text;
-    } else if (typeof el.setAttribute === 'function') {
-      el.setAttribute('value', text);
-    }
+    setValue(el, text);
     if (typeof el.dispatchEvent === 'function') {
       try { el.dispatchEvent(new window.Event('input', { bubbles: true })); } catch (e) { /* 忽略 */ }
       try { el.dispatchEvent(new window.Event('change', { bubbles: true })); } catch (e) { /* 忽略 */ }

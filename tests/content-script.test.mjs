@@ -33,6 +33,7 @@ const docState = {
   cssMatches: {}, // sel -> element（CSS 命中）
   xpathMatches: {}, // xpathExpr -> element（XPath 命中）
   textMatches: {}, // needle -> element（文本包含命中）
+  cssThrows: false, // 模拟 querySelector 抛 SyntaxError（非法选择器）
   scrollTotal: 0,
   scrollCalls: 0,
   dispatched: [], // closeModal 派发的事件
@@ -66,6 +67,15 @@ const mockWindow = {
   },
   KeyboardEvent: MockKeyboardEvent,
   Event: MockEvent,
+  // React 受控组件的原生 value 描述符（用于 setValue 走原生 setter 分支）。
+  HTMLInputElement: {
+    prototype: {
+      value: {
+        set(v) { this._value = v; },
+        get() { return this._value; },
+      },
+    },
+  },
 };
 
 // 文本匹配用的 XPath 形如：//*[contains(normalize-space(.), "needle")]
@@ -73,6 +83,7 @@ const TEXT_XPATH_RE = /contains\(\s*normalize-space\([^)]*\)\s*,\s*["'](.*?)["']
 
 const mockDocument = {
   querySelector(sel) {
+    if (docState.cssThrows) throw new SyntaxError('invalid selector');
     return docState.cssMatches[sel] || null;
   },
   // 模拟 document.evaluate（XPathResult.FIRST_ORDERED_NODE_TYPE 的结果对象）。
@@ -84,10 +95,12 @@ const mockDocument = {
     if (m) {
       const needle = m[1];
       if (docState.textMatches[needle]) {
-        return { singleNodeValue: docState.textMatches[needle], iterateNext: () => null };
+        const el = docState.textMatches[needle];
+        // 文本包含路径：返回 snapshot 形态（source 取最深节点 snapshotItem(length-1)）。
+        return { snapshotLength: 1, snapshotItem: () => el, singleNodeValue: el, iterateNext: () => null };
       }
     }
-    return { singleNodeValue: null, iterateNext: () => null };
+    return { snapshotLength: 0, snapshotItem: () => null, singleNodeValue: null, iterateNext: () => null };
   },
   querySelectorAll() {
     return [];
@@ -107,7 +120,12 @@ function makeElement(tag = 'div', props = {}) {
     textContent: props.textContent != null ? props.textContent : '',
     outerHTML: props.outerHTML != null ? props.outerHTML : `<${tag}>${(props.textContent || '')}</${tag}>`,
     type: props.type != null ? props.type : undefined,
-    value: props.value != null ? props.value : '',
+    get value() {
+      return this._value != null ? this._value : '';
+    },
+    set value(v) {
+      this._value = v;
+    },
     _clicked: false,
     click() {
       this._clicked = true;
@@ -159,6 +177,7 @@ function resetDoc() {
   docState.cssMatches = {};
   docState.xpathMatches = {};
   docState.textMatches = {};
+  docState.cssThrows = false;
   docState.scrollTotal = 0;
   docState.scrollCalls = 0;
   docState.dispatched = [];
@@ -209,6 +228,24 @@ test('findFirstElement：全部失败返回 null', () => {
   resetDoc();
   const got = sandbox.findFirstElement(['#nope', '//div[@id="y"]', '没有这个文本']);
   assert.equal(got, null, '无任何命中时应返回 null');
+});
+
+test('findFirstElement：CSS 抛 SyntaxError 时应回退到 XPath 命中', () => {
+  resetDoc();
+  docState.cssThrows = true; // 模拟 querySelector 对非法选择器抛错
+  const xpathEl = makeElement('div', { id: 'x' });
+  docState.xpathMatches["//div[@id='x']"] = xpathEl;
+  const got = sandbox.findFirstElement(["//div[@id='x']"]);
+  assert.equal(got, xpathEl, 'CSS 抛错后应收敛到 XPath 命中');
+});
+
+test('findFirstElement：CSS 抛错且 XPath 无匹配时回退到文本包含', () => {
+  resetDoc();
+  docState.cssThrows = true;
+  const textEl = makeElement('button', { textContent: '立即登录' });
+  docState.textMatches['登录'] = textEl;
+  const got = sandbox.findFirstElement(['登录']);
+  assert.equal(got, textEl, 'CSS 抛错、XPath 无果时应回退到文本包含匹配');
 });
 
 // ============================================================================
