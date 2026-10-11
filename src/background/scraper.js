@@ -319,10 +319,15 @@ export class Scraper {
   async cancel(taskId) {
     const task = await this.taskManager.getTask(taskId);
     if (!task) throw new Error(`cancel: 任务 ${taskId} 不存在`);
+    // 仅对 running 任务执行转移；其余状态（pending/completed/failed/cancelled）幂等返回，
+    // 既避免「非法状态转移」抛错，也保证取消标志不泄漏到 _cancelled 集合。
+    if (task.status !== 'running') return task;
     this._cancelled.add(taskId);
-    // 已经是 cancelled 则幂等，避免对已终态任务触发「非法状态转移」。
-    if (task.status !== 'cancelled') {
+    try {
       await this.taskManager.updateStatus(task, 'cancelled');
+    } catch (err) {
+      this._cancelled.delete(taskId);
+      throw err;
     }
     return task;
   }

@@ -261,6 +261,25 @@ test('(e) 进行中的 run() 被 cancel 中断，任务置为 cancelled（不记
 });
 
 // ---------------------------------------------------------------------------
+// (g) cancel 对已终态（completed）任务幂等返回，不抛「非法状态转移」、不泄漏取消标志
+// ---------------------------------------------------------------------------
+
+test('(g) cancel 对已终态（completed）任务幂等，不抛错、不泄漏取消标志', async () => {
+  const { scraper, storage } = makeScraper();
+  const task = baseTask('task_g', { status: 'completed', progress: { phase: 'done' } });
+  await storage.saveTask(task);
+
+  // 不应抛错，应原样返回，状态保持 completed。
+  const returned = await scraper.cancel('task_g');
+  assert.equal(returned.status, 'completed', '已 completed 的任务 cancel 应幂等、状态不变');
+
+  const saved = await scraper.taskManager.getTask('task_g');
+  assert.equal(saved.status, 'completed');
+  // 取消标志不应泄漏到实例集合（running 之外的任务不会进入 _cancelled）。
+  assert.equal(scraper._cancelled.has('task_g'), false, '非 running 任务不应写入 _cancelled 集合');
+});
+
+// ---------------------------------------------------------------------------
 // (f) 搜索阶段中断（phase=searching、noteUrls 部分采集）后 resume 应补完搜索
 // ---------------------------------------------------------------------------
 
