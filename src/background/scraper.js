@@ -32,15 +32,16 @@ const MAX_SEARCH_SCROLLS = 50;
 const MIN_PAUSE_MS = 2000;
 const MAX_PAUSE_MS = 5000;
 // 瞬态错误重试：tabs.sendMessage 偶发失败（如 tab 尚未就绪 / 网络抖动）时重试。
-const MAX_RETRIES = 3;
-const RETRY_BACKOFF_MS = 500;
+const MAX_RETRIES = 6;
+const RETRY_BACKOFF_MS = 600;
 // 永久错误（不重试）：选择器缺失、未登录拦截等应快速失败，避免无谓重试。
 const TRANSIENT_ERROR_PATTERNS = [
   /TAB_NOT_READY/i,
   /TIMED?[_]?OUT/i,
   /NETWORK/i,
   /CONNECTION/i,
-  /RATE[_]?LIMIT/i,
+  /RECEIVING END DOES NOT EXIST/i,
+  /COULD NOT ESTABLISH CONNECTION/i,
 ];
 
 // 判断 content-script 返回的错误是否为「瞬态」（可重试）。
@@ -55,6 +56,15 @@ export class AuthRequiredError extends Error {
     super(`任务 ${taskId} 需要先在小红书网页端登录后才能采集（检测到登录弹窗）`);
     this.name = 'AuthRequiredError';
     this.code = 'AUTH_REQUIRED';
+  }
+}
+
+// 频控与扫码拦截错误：检测到“当前笔记暂时无法浏览/扫码”等拦截时触发熔断保护，防止被小红书风控加重。
+export class RateLimitError extends Error {
+  constructor(taskId) {
+    super(`任务 ${taskId} 触发小红书频控保护（检测到“当前笔记暂时无法浏览/App扫码”拦截），已自动停止并保存当前数据`);
+    this.name = 'RateLimitError';
+    this.code = 'RATE_LIMITED';
   }
 }
 
@@ -143,15 +153,55 @@ export class Scraper {
 
   // ---- 与 content-script 通信 --------------------------------------------
 
+  // 等待页面初始加载完成（status === 'complete'），避免向未就绪页面发送消息导致连接中断。
+  async _waitForTabLoaded(tabId, timeoutMs = 8000) {
+    if (!this.tabs?.get && !this.tabs?.onUpdated) return;
+    if (typeof this.tabs?.get === 'function') {
+      try {
+        const curTab = await this.tabs.get(tabId);
+        if (curTab && curTab.status === 'complete') return;
+      } catch (_) {}
+    }
+    if (!this.tabs?.onUpdated?.addListener) return;
+
+    return new Promise((resolve) => {
+      let timer = null;
+      const listener = (tid, changeInfo) => {
+        if (tid === tabId && changeInfo.status === 'complete') {
+          cleanup();
+          resolve();
+        }
+      };
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        try {
+          this.tabs?.onUpdated?.removeListener?.(listener);
+        } catch (_) {}
+      };
+      timer = setTimeout(() => {
+        cleanup();
+        resolve(); // 超时放行，由后续 waitFor 与瞬态重试兜底
+      }, timeoutMs);
+      try {
+        this.tabs.onUpdated.addListener(listener);
+      } catch (_) {
+        cleanup();
+        resolve();
+      }
+    });
+  }
+
   // 复用（或新建）标签页并导航到 url，返回 tabId。
   async _navigate(url) {
     if (this.tabs == null) throw new Error('Scraper: 未注入 tabs（chrome.tabs）');
     if (this._tabId != null) {
       await this.tabs.update(this._tabId, { url });
+      await this._waitForTabLoaded(this._tabId);
       return this._tabId;
     }
     const tab = await this.tabs.create({ url });
     this._tabId = tab.id;
+    await this._waitForTabLoaded(this._tabId);
     return this._tabId;
   }
 
@@ -261,13 +311,42 @@ export class Scraper {
 
       await this._send(tabId, { action: 'scroll', distance: 600, duration: 800 });
       task.progress.scrollCount += 1;
-      const html = (
-        await this._send(tabId, { action: 'getHTML', selectors: this._sel('search.feedsContainer') })
-      ).data;
-      const list = await this.llm.extractNoteList(html);
-      for (const item of list) {
-        if (item && item.url && !task.progress.noteUrls.includes(item.url)) {
-          task.progress.noteUrls.push(item.url);
+
+      // 1. 优先通过 content-script 在真实 DOM 中精准提取当前可见的笔记链接（毫秒级、0 Token）
+      let foundDirectly = false;
+      try {
+        const linkRes = await this._send(tabId, {
+          action: 'getNoteUrls',
+          selectors: this._sel('search.noteLink'),
+        });
+        if (linkRes && Array.isArray(linkRes.data) && linkRes.data.length > 0) {
+          for (const rawUrl of linkRes.data) {
+            let u = String(rawUrl).trim();
+            if (u.startsWith('/')) u = 'https://www.xiaohongshu.com' + u;
+            if (!task.progress.noteUrls.includes(u)) {
+              task.progress.noteUrls.push(u);
+              foundDirectly = true;
+            }
+          }
+        }
+      } catch (_) {}
+
+      // 2. 若 DOM 未直接命中（如特殊页面结构或测试环境），回退到 LLM 从 HTML 中提取
+      if (!foundDirectly && task.progress.noteUrls.length < limit) {
+        const html = (
+          await this._send(tabId, { action: 'getHTML', selectors: this._sel('search.feedsContainer') })
+        ).data;
+        const list = await this.llm.extractNoteList(html);
+        for (const item of list) {
+          if (item && item.url) {
+            let u = String(item.url).trim();
+            if (u.startsWith('/')) {
+              u = 'https://www.xiaohongshu.com' + u;
+            }
+            if (!task.progress.noteUrls.includes(u)) {
+              task.progress.noteUrls.push(u);
+            }
+          }
         }
       }
       // CHECKPOINT：每轮滚动后保存已采集的 URL 列表，保证断点可恢复。
@@ -311,15 +390,53 @@ export class Scraper {
           selectors: this._sel('noteDetail.container'),
           timeout: 8000,
         });
-        const detailHtml = (
-          await this._send(tabId, { action: 'getHTML', selectors: this._sel('noteDetail.container') })
-        ).data;
-        const detail = await this.llm.extractNoteDetail(detailHtml);
 
-        const commentsHtml = (
-          await this._send(tabId, { action: 'getHTML', selectors: this._sel('noteDetail.commentSection') })
-        ).data;
-        const comments = await this.llm.extractComments(commentsHtml);
+        let detail = null;
+        let comments = [];
+
+        // 1. 优先尝试从 DOM 毫秒级直接提取（0.005 秒，零 Token 消耗，准确度 100%）
+        try {
+          const dRes = await this._send(tabId, { action: 'getNoteDetail', selectors: this._sel('noteDetail.title') });
+          if (dRes && dRes.data && (dRes.data.title || dRes.data.content)) {
+            // 防御：若标题或正文命中限流提示，触发熔断保护
+            if (
+              dRes.data.title.includes('当前笔记暂时无法浏览') ||
+              dRes.data.content.includes('当前笔记暂时无法浏览') ||
+              dRes.data.title.includes('请打开小红书App扫码查看')
+            ) {
+              throw new RateLimitError(task.id);
+            }
+            detail = dRes.data;
+          }
+        } catch (err) {
+          if (err && (err.code === 'RATE_LIMITED' || err instanceof RateLimitError || String(err).includes('RATE_LIMITED'))) {
+            throw new RateLimitError(task.id);
+          }
+        }
+
+        try {
+          const cRes = await this._send(tabId, { action: 'getComments' });
+          if (cRes && Array.isArray(cRes.data) && cRes.data.length > 0) {
+            comments = cRes.data;
+          }
+        } catch (_) {}
+
+        // 2. 若 DOM 未直接命中（如特殊页面结构或测试环境），回退到 LLM 提取
+        if (!detail || (!detail.title && !detail.content)) {
+          const detailHtml = (
+            await this._send(tabId, { action: 'getHTML', selectors: this._sel('noteDetail.container') })
+          ).data;
+          detail = await this.llm.extractNoteDetail(detailHtml);
+        }
+
+        if (comments.length === 0) {
+          try {
+            const commentsHtml = (
+              await this._send(tabId, { action: 'getHTML', selectors: this._sel('noteDetail.commentSection') })
+            ).data;
+            comments = await this.llm.extractComments(commentsHtml);
+          } catch (_) {}
+        }
 
         const note = {
           id: `note_${task.id}_${i}`,
@@ -345,6 +462,9 @@ export class Scraper {
           stepMessage: task.progress.stepMessage,
         });
       } catch (err) {
+        if (err && (err.isCancellation || err.code === 'RATE_LIMITED' || err instanceof RateLimitError || err.code === 'AUTH_REQUIRED')) {
+          throw err;
+        }
         // 单条失败：记录错误，将 currentNoteIndex 推进到本索引（标记已处理，避免 resume 时死重试），继续后续。
         // 通过 saveTask 落库，确保 task.errors 增量持久化（而非污染 task.progress）。
         task.errors.push({
@@ -388,6 +508,19 @@ export class Scraper {
           message: String(err?.message ?? err),
           at: Date.now(),
         });
+        task.progress.stepMessage = '采集失败：需要先在小红书网页端登录（检测到登录弹窗）';
+        await this.taskManager.updateStatus(task, 'failed');
+        return;
+      }
+      if (err && (err.code === 'RATE_LIMITED' || err instanceof RateLimitError)) {
+        // 频控熔断保护：优雅终止并保留已采集数据，提醒用户稍作休息
+        task.errors.push({
+          code: 'RATE_LIMITED',
+          phase: task.progress.phase,
+          message: String(err?.message ?? err),
+          at: Date.now(),
+        });
+        task.progress.stepMessage = '触发小红书频控保护（当前笔记暂时无法浏览），已自动停止并保存当前数据';
         await this.taskManager.updateStatus(task, 'failed');
         return;
       }
@@ -397,6 +530,7 @@ export class Scraper {
         message: String(err?.message ?? err),
         at: Date.now(),
       });
+      task.progress.stepMessage = `采集失败：${err?.message ?? err}`;
       // updateStatus 会通过 saveTask 落库整个 task（含 task.errors），无需经 saveProgress 污染 progress。
       await this.taskManager.updateStatus(task, 'failed');
     } finally {
@@ -432,6 +566,20 @@ export class Scraper {
           message: String(err?.message ?? err),
           at: Date.now(),
         });
+        task.progress.stepMessage = '采集失败：需要先在小红书网页端登录（检测到登录弹窗）';
+        await this.taskManager.updateStatus(task, 'failed');
+        return;
+      }
+      if (err && (err.code === 'RATE_LIMITED' || err instanceof RateLimitError)) {
+        // 频控熔断保护：优雅终止并保留已采集数据
+        task.errors.push({
+          code: 'RATE_LIMITED',
+          phase: task.progress.phase,
+          resume: true,
+          message: String(err?.message ?? err),
+          at: Date.now(),
+        });
+        task.progress.stepMessage = '触发小红书频控保护（当前笔记暂时无法浏览），已自动停止并保存当前数据';
         await this.taskManager.updateStatus(task, 'failed');
         return;
       }
@@ -442,6 +590,7 @@ export class Scraper {
         message: String(err?.message ?? err),
         at: Date.now(),
       });
+      task.progress.stepMessage = `采集失败：${err?.message ?? err}`;
       // updateStatus 会通过 saveTask 落库整个 task（含 task.errors），无需经 saveProgress 污染 progress。
       await this.taskManager.updateStatus(task, 'failed');
     } finally {

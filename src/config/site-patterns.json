@@ -17,6 +17,16 @@
           "strategy": "check_user_auth_or_prompt"
         },
         "rateLimit": {
+          "detectKeywords": [
+            "当前笔记暂时无法浏览",
+            "请打开小红书App扫码查看",
+            "操作过于频繁",
+            "访问被拒绝",
+            "网络异常",
+            "安全验证",
+            "滑动验证"
+          ],
+          "detectSelector": ".qrcode-img, [class*='qrcode'], .verify-box, div[class*='verify']",
           "code": 300031,
           "cooldownSeconds": 300
         }
@@ -25,15 +35,39 @@
         "search": {
           "input": ["#search-input", "input.search-input", "input[placeholder*='搜索']"],
           "searchButton": [".search-btn", "button[type='submit']"],
-          "feedsContainer": [".feeds-page", ".search-result-feeds", "section[class*='feed']"],
-          "noteCard": [".note-item", "section.note-card", "div[data-note-id]"],
-          "noteLink": [".note-item a.cover", "a[href*='/explore/']"]
+          "feedsContainer": [
+            ".feeds-page",
+            ".search-result-feeds",
+            ".feeds-container",
+            ".search-layout",
+            ".search-layout-content",
+            ".search-result-container",
+            "div[class*='feeds-container']",
+            "div[class*='search-result']",
+            "section[class*='feed']",
+            "#global",
+            "main",
+            "body"
+          ],
+          "noteCard": [".note-item", "section.note-card", "div[data-note-id]", "section[class*='note-card']"],
+          "noteLink": [".note-item a.cover", "a[href*='/explore/']", "a[href*='/search_result/']"]
         },
         "noteDetail": {
-          "container": ["#noteContainer", ".note-detail-mask", ".note-container"],
-          "title": [".note-title", "#detail-title", "h1[class*='title']"],
-          "content": [".note-content", ".content-text", "[class*='content-desc']"],
-          "commentSection": [".comments-container", ".comment-wrapper"],
+          "container": [
+            "#noteContainer",
+            ".note-container",
+            ".interaction-container",
+            ".note-scroller",
+            ".note-detail-mask",
+            ".note-flow",
+            "div[class*='note-container']",
+            "div[class*='interaction']",
+            "div[class*='note-detail']",
+            "body"
+          ],
+          "title": [".note-title", "#detail-title", "h1[class*='title']", "[class*='title']"],
+          "content": [".note-content", ".content-text", "[class*='content-desc']", "[class*='note-text']"],
+          "commentSection": [".comments-container", ".comment-wrapper", ".comments-el", "div[class*='comment']"],
           "commentItem": [".comment-item", "div[class*='comment-item']"]
         }
       }

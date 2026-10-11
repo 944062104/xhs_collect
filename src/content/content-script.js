@@ -320,6 +320,141 @@ function handleEval(msg, sendResponse) {
   return false;
 }
 
+// getNoteUrls：从当前页面 DOM 中毫秒级直接提取所有笔记卡片链接。
+function handleGetNoteUrls(msg, sendResponse) {
+  var selectors = resolveSelectors(msg);
+  var urls = [];
+  var seen = {};
+
+  function addUrl(raw) {
+    if (!raw) return;
+    var s = String(raw).trim();
+    if (!s || s === '#' || s.startsWith('javascript:')) return;
+    var isNoteLink =
+      s.includes('/explore/') ||
+      s.includes('/search_result/') ||
+      s.includes('/discovery/item/');
+    if (!isNoteLink && !s.match(/\/[a-f0-9]{24}/)) return;
+    if (!seen[s]) {
+      seen[s] = true;
+      urls.push(s);
+    }
+  }
+
+  // 1. 优先通过传入的选择器查找
+  for (var i = 0; i < selectors.length; i++) {
+    try {
+      var els = document.querySelectorAll(selectors[i]);
+      for (var j = 0; j < els.length; j++) {
+        var el = els[j];
+        var href = el.getAttribute('href') || (el.href ? el.href : '');
+        addUrl(href);
+      }
+    } catch (_) {}
+  }
+
+  // 2. 备选扫描：页面所有符合笔记特征的 a 标签
+  try {
+    var allA = document.querySelectorAll('a[href*="/search_result/"], a[href*="/explore/"]');
+    for (var k = 0; k < allA.length; k++) {
+      var aHref = allA[k].getAttribute('href') || allA[k].href;
+      addUrl(aHref);
+    }
+  } catch (_) {}
+
+  // 3. 备选扫描：带有 data-id 或 data-note-id 的卡片
+  try {
+    var cards = document.querySelectorAll('[data-id], [data-note-id]');
+    for (var m = 0; m < cards.length; m++) {
+      var card = cards[m];
+      var noteId = card.getAttribute('data-note-id') || card.getAttribute('data-id');
+      if (noteId && noteId.length >= 16 && !noteId.includes(' ')) {
+        addUrl('/explore/' + noteId);
+      }
+    }
+  } catch (_) {}
+
+  sendResponse({ ok: true, data: urls });
+  return false;
+}
+
+// getNoteDetail：从当前页面 DOM 中毫秒级直接提取笔记详情（标题、正文、作者、点赞、标签、图片）。
+function handleGetNoteDetail(msg, sendResponse) {
+  try {
+    // 0. 优先检测是否进入了限流/扫码/封控拦截页面，避免将提示误当笔记正文
+    var bodyText = (document.body && (document.body.innerText || document.body.textContent)) || '';
+    if (
+      bodyText.indexOf('当前笔记暂时无法浏览') !== -1 ||
+      bodyText.indexOf('请打开小红书App扫码查看') !== -1 ||
+      bodyText.indexOf('操作过于频繁') !== -1 ||
+      bodyText.indexOf('滑动验证') !== -1
+    ) {
+      sendResponse({ ok: false, error: 'RATE_LIMITED', code: 300031 });
+      return false;
+    }
+
+    var selectors = resolveSelectors(msg);
+    var titleEl = findFirstElement(
+      selectors.concat(['#detail-title', '.title', 'h1[class*="title"]', '[class*="title"]'])
+    );
+    var contentEl = findFirstElement(['#detail-desc', '.note-text', '[class*="desc"]', '[class*="content"]']);
+    var authorEl = findFirstElement(['.username', '.author-name', '[class*="author"] [class*="name"]', '[class*="name"]']);
+    var likesEl = findFirstElement(['.like-wrapper .count', '[class*="interact"] [class*="count"]', '[class*="like"] [class*="count"]']);
+
+    var tags = [];
+    var tagEls = document.querySelectorAll('a[href*="/search_result?keyword="], a[class*="tag"], [class*="hash-tag"]');
+    for (var i = 0; i < tagEls.length; i++) {
+      var t = tagEls[i].textContent.trim();
+      if (t && tags.indexOf(t) === -1) tags.push(t);
+    }
+
+    var images = [];
+    var imgEls = document.querySelectorAll('.note-slider img, div[class*="image"] img, .media-container img, [class*="swiper"] img');
+    for (var j = 0; j < imgEls.length; j++) {
+      var src = imgEls[j].src || imgEls[j].getAttribute('src');
+      if (src && !src.startsWith('data:') && images.indexOf(src) === -1) images.push(src);
+    }
+
+    var data = {
+      title: titleEl ? titleEl.textContent.trim() : '',
+      content: contentEl ? contentEl.textContent.trim() : '',
+      author: authorEl ? authorEl.textContent.trim() : '',
+      likes: likesEl ? likesEl.textContent.trim() : 0,
+      tags: tags,
+      images: images,
+    };
+    sendResponse({ ok: true, data: data });
+  } catch (e) {
+    sendResponse({ ok: false, error: String(e) });
+  }
+  return false;
+}
+
+// getComments：从当前页面 DOM 中毫秒级直接提取评论列表。
+function handleGetComments(msg, sendResponse) {
+  try {
+    var comments = [];
+    var itemEls = document.querySelectorAll('.comment-item, div[class*="comment-item"], div[class*="comment-inner"]');
+    for (var i = 0; i < Math.min(itemEls.length, 30); i++) {
+      var it = itemEls[i];
+      var authEl = it.querySelector('.name, .author, [class*="name"]');
+      var textEl = it.querySelector('.content, .text, [class*="content"]');
+      var likeEl = it.querySelector('.like .count, [class*="like"]');
+      var timeEl = it.querySelector('.date, .time, [class*="date"]');
+      comments.push({
+        author: authEl ? authEl.textContent.trim() : '',
+        text: textEl ? textEl.textContent.trim() : '',
+        likes: likeEl ? likeEl.textContent.trim() : 0,
+        publishedAt: timeEl ? timeEl.textContent.trim() : '',
+      });
+    }
+    sendResponse({ ok: true, data: comments });
+  } catch (e) {
+    sendResponse({ ok: false, error: String(e) });
+  }
+  return false;
+}
+
 // ----------------------------------------------------------------------------
 // 消息分发
 // ----------------------------------------------------------------------------
@@ -338,6 +473,12 @@ if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage)
         return handleScroll(message, sendResponse);
       case 'getHTML':
         return handleGetHTML(message, sendResponse);
+      case 'getNoteUrls':
+        return handleGetNoteUrls(message, sendResponse);
+      case 'getNoteDetail':
+        return handleGetNoteDetail(message, sendResponse);
+      case 'getComments':
+        return handleGetComments(message, sendResponse);
       case 'type':
         return handleType(message, sendResponse);
       case 'getType':

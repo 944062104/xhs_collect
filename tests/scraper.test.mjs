@@ -451,8 +451,49 @@ test('(l) 任务失败 (failed) 时依然在 finally 块中关闭标签页', asy
   await scraper.run(task);
 
   assert.equal(task.status, 'failed');
+  assert.ok(task.progress.stepMessage.startsWith('采集失败：'), '失败时 stepMessage 应明确展示采集失败原因');
   assert.deepEqual(tabs.ops.removed, [1], '任务失败时也应安全关闭创建的标签页');
   assert.equal(scraper._tabId, null);
+});
+
+test('(m) 搜索阶段提取相对路径时自动补全为 https://www.xiaohongshu.com 开头的绝对路径', async () => {
+  const tabs = makeTabs();
+  const llm = makeLlm({
+    noteUrls: [{ url: '/explore/abc12345', title: '相对路径笔记' }],
+  });
+  const { scraper, storage } = makeScraper({ tabs, llm });
+
+  const task = baseTask('task_m', { config: { notesLimit: 1 } });
+  await storage.saveTask(task);
+  await scraper.run(task);
+
+  assert.equal(task.status, 'completed');
+  assert.equal(task.progress.noteUrls[0], 'https://www.xiaohongshu.com/explore/abc12345');
+});
+
+test('(n) 详情阶段遭遇小红书频控阻断（扫码/当前笔记暂时无法浏览）时触发熔断保护并停止', async () => {
+  const tabs = makeTabs();
+  const llm = makeLlm({
+    noteUrls: [{ url: 'https://xhs.com/explore/rate_limit_1', title: '正常搜索' }],
+  });
+  const { scraper, storage } = makeScraper({ tabs, llm });
+
+  const origSendMessage = tabs.sendMessage;
+  tabs.sendMessage = async (id, msg) => {
+    if (msg.action === 'getNoteDetail') {
+      return { ok: false, error: 'RATE_LIMITED', code: 300031 };
+    }
+    return origSendMessage(id, msg);
+  };
+
+  const task = baseTask('task_n', { config: { notesLimit: 1 } });
+  await storage.saveTask(task);
+  await scraper.run(task);
+
+  assert.equal(task.status, 'failed');
+  assert.ok(task.errors.some((e) => e.code === 'RATE_LIMITED'), 'task.errors 中应记录 RATE_LIMITED');
+  assert.ok(task.progress.stepMessage.includes('触发小红书频控保护'), 'stepMessage 应提示频控保护已自动停止');
+  assert.deepEqual(tabs.ops.removed, [1], '频控熔断后应安全关闭标签页');
 });
 
 
