@@ -250,14 +250,14 @@ function initPopup() {
         return;
       }
       if (!resp.ok) {
+        // 注意：未登录(AUTH_REQUIRED) 不会在 START 响应中返回，而是由 pollOnce 通过
+        // GET_PROGRESS 的 errors 在采集过程中检测并提示，故此处仅处理启动阶段的即时错误。
         if (resp.error === 'NO_API_KEY') {
           showError('缺少 Claude API Key，请在下方高级设置中填写');
           els.advancedPanel.classList.add('open');
           els.apiKey.focus();
         } else if (resp.error === 'TASK_ALREADY_RUNNING') {
           showError('已有采集任务在进行中');
-        } else if (resp.error === 'AUTH_REQUIRED') {
-          showError('请在小红书网页端登录后再采集');
         } else {
           showError('启动失败：' + resp.error);
         }
