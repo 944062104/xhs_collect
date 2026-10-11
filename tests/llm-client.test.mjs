@@ -68,9 +68,39 @@ test('构造函数：支持配置自定义 apiBase / baseUrl 与 model', () => {
   const client1 = new LLMClient({ apiKey: 'sk-123', apiBase: 'https://api.my-proxy.com', model: 'claude-3-5-haiku-20241022' });
   assert.equal(client1.apiUrl, 'https://api.my-proxy.com/v1/messages');
   assert.equal(client1.model, 'claude-3-5-haiku-20241022');
+  assert.equal(client1.protocol, 'anthropic');
 
   const client2 = new LLMClient({ apiKey: 'sk-123', apiBase: 'https://api.my-proxy.com/v1/messages/' });
   assert.equal(client2.apiUrl, 'https://api.my-proxy.com/v1/messages');
+  assert.equal(client2.protocol, 'anthropic');
+
+  const clientOpenAI = new LLMClient({ apiKey: 'sk-openai-key', apiBase: 'https://api.openai.com', model: 'gpt-4o' });
+  assert.equal(clientOpenAI.apiUrl, 'https://api.openai.com/v1/chat/completions');
+  assert.equal(clientOpenAI.protocol, 'openai');
+});
+
+test('OpenAI 兼容协议：使用 Authorization Bearer 头并解析 choices[0].message.content', async () => {
+  installFetch((url, opts) => {
+    assert.equal(opts.headers.authorization, 'Bearer sk-fake-key');
+    const body = JSON.parse(opts.body);
+    assert.equal(body.model, 'deepseek-chat');
+    assert.equal(body.messages[1].role, 'user');
+    return jsonResponse({
+      choices: [{ message: { content: JSON.stringify([{ title: 'OpenAI 笔记', url: '/p/1' }]) } }],
+    });
+  });
+  try {
+    const client = new LLMClient({
+      apiKey: 'sk-fake-key',
+      apiBase: 'https://api.deepseek.com',
+      model: 'deepseek-chat',
+    });
+    assert.equal(client.protocol, 'openai');
+    const res = await client.extractNoteList('<div>内容</div>');
+    assert.equal(res[0].title, 'OpenAI 笔记');
+  } finally {
+    restoreFetch();
+  }
 });
 
 test('cleanHtml：去除 <script>/<style>/<svg> 与 data: URI', () => {

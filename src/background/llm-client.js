@@ -178,42 +178,86 @@ export class LLMClient {
     this.apiKey = apiKey;
     this.model = model;
 
-    // 格式化 API 地址：支持传入完整 /v1/messages，或只传根域名自动补全
-    if (apiBase) {
-      let trimmed = apiBase.trim().replace(/\/+$/, '');
-      if (!trimmed.endsWith('/v1/messages')) {
-        trimmed = trimmed.endsWith('/v1') ? `${trimmed}/messages` : `${trimmed}/v1/messages`;
-      }
-      this.apiUrl = trimmed;
-    } else {
+    // 协议判断：
+    // 1. 如果 apiBase 显式包含 chat/completions 或 openai，或 model 包含 gpt/deepseek/qwen/glm/moonshot 等，
+    //    或以 sk- 开头且不是 sk-ant- 开头且配置了第三方 apiBase，判定为 OpenAI 兼容协议。
+    const trimmedBase = (apiBase || '').trim().replace(/\/+$/, '');
+    const isExplicitOpenAi =
+      /\/chat\/completions\b/i.test(trimmedBase) ||
+      /openai/i.test(trimmedBase) ||
+      /deepseek|qwen|glm|moonshot|yi|baichuan|gpt/i.test(model);
+    const isExplicitAnthropic =
+      /anthropic|claude/i.test(trimmedBase) ||
+      /claude/i.test(model) ||
+      apiKey.startsWith('sk-ant-');
+
+    if (!trimmedBase) {
+      this.protocol = 'anthropic';
       this.apiUrl = API_URL;
+    } else if (trimmedBase.includes('/chat/completions')) {
+      this.protocol = 'openai';
+      this.apiUrl = trimmedBase;
+    } else if (trimmedBase.includes('/messages')) {
+      this.protocol = 'anthropic';
+      this.apiUrl = trimmedBase;
+    } else if (isExplicitAnthropic) {
+      this.protocol = 'anthropic';
+      this.apiUrl = trimmedBase.endsWith('/v1') ? `${trimmedBase}/messages` : `${trimmedBase}/v1/messages`;
+    } else if (isExplicitOpenAi) {
+      this.protocol = 'openai';
+      this.apiUrl = trimmedBase.endsWith('/v1') ? `${trimmedBase}/chat/completions` : `${trimmedBase}/v1/chat/completions`;
+    } else if (apiKey.startsWith('sk-') && !apiKey.startsWith('sk-ant-')) {
+      this.protocol = 'openai';
+      this.apiUrl = trimmedBase.endsWith('/v1')
+        ? `${trimmedBase}/chat/completions`
+        : `${trimmedBase}/v1/chat/completions`;
+    } else {
+      this.protocol = 'anthropic';
+      this.apiUrl = trimmedBase.endsWith('/v1') ? `${trimmedBase}/messages` : `${trimmedBase}/v1/messages`;
     }
   }
 
-  // 调用 Claude Messages API，返回模型输出的文本字符串。
-  // 网络/HTTP 错误会立即抛出（不会进入下方的 JSON 重试逻辑）。
+  // 调用大模型 API（支持 Anthropic 与 OpenAI 兼容协议），返回文本字符串。
   async _callApi(systemPrompt, userPrompt) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
     let res;
+
+    const headers = {
+      'content-type': 'application/json',
+    };
+    let bodyObj;
+
+    if (this.protocol === 'openai') {
+      headers['authorization'] = `Bearer ${this.apiKey}`;
+      bodyObj = {
+        model: this.model,
+        messages: [
+          ...(systemPrompt ? [{ role: 'system', content: systemPrompt }] : []),
+          { role: 'user', content: userPrompt },
+        ],
+        temperature: 0.1,
+      };
+    } else {
+      headers['x-api-key'] = this.apiKey;
+      headers['anthropic-version'] = '2023-06-01';
+      bodyObj = {
+        model: this.model,
+        max_tokens: MAX_TOKENS,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: userPrompt }],
+      };
+    }
+
     try {
       res = await fetch(this.apiUrl, {
         method: 'POST',
-        headers: {
-          'x-api-key': this.apiKey,
-          'anthropic-version': '2023-06-01',
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: this.model,
-          max_tokens: MAX_TOKENS,
-          system: systemPrompt,
-          messages: [{ role: 'user', content: userPrompt }],
-        }),
+        headers,
+        body: JSON.stringify(bodyObj),
         signal: controller.signal,
       });
     } catch (networkErr) {
-      throw new Error(`Claude API 网络请求失败：${networkErr?.message || networkErr}`);
+      throw new Error(`LLM API 网络请求失败：${networkErr?.message || networkErr}`);
     } finally {
       clearTimeout(timer);
     }
@@ -224,19 +268,32 @@ export class LLMClient {
         const errBody = await res.json();
         if (errBody?.error?.message) detail = `: ${errBody.error.message}`;
         else if (typeof errBody?.error === 'string') detail = `: ${errBody.error}`;
+        else if (errBody?.message) detail = `: ${errBody.message}`;
       } catch {
         /* 响应体非 JSON，忽略 */
       }
-      throw new Error(`Claude API 请求失败：HTTP ${res.status}${detail}`);
+      throw new Error(`LLM API 请求失败：HTTP ${res.status}${detail}`);
     }
 
     const data = await res.json();
+
+    // 提取响应文本
+    if (this.protocol === 'openai') {
+      const choice = data?.choices?.[0];
+      const text = choice?.message?.content;
+      if (typeof text !== 'string') {
+        throw new Error('OpenAI 兼容 API 返回格式异常：缺少 choices[0].message.content');
+      }
+      return text;
+    }
+
+    // Anthropic 格式
     const textBlock = Array.isArray(data?.content)
       ? data.content.find((b) => b?.type === 'text')
       : null;
     const text = textBlock?.text;
     if (typeof text !== 'string') {
-      throw new Error('Claude API 返回格式异常：缺少文本类型（type==="text"）的 content 块');
+      throw new Error('Anthropic API 返回格式异常：缺少文本类型的 content 块');
     }
     return text;
   }
