@@ -19,16 +19,42 @@ var XPATH_SNAPSHOT = 7;
 // ----------------------------------------------------------------------------
 // 多级备选选择器探测：CSS → XPath → 文本包含
 // ----------------------------------------------------------------------------
+// 判断元素在页面上是否可见（防隐藏 modal-mask / 占位元素误判）。
+function isElementVisible(el) {
+  if (!el) return false;
+  if (el.offsetParent === null) {
+    if (el.style && (el.style.display === 'none' || el.style.visibility === 'hidden')) {
+      return false;
+    }
+    if (typeof window !== 'undefined' && typeof window.getComputedStyle === 'function') {
+      try {
+        var style = window.getComputedStyle(el);
+        if (style && (style.display === 'none' || style.visibility === 'hidden')) {
+          return false;
+        }
+      } catch (e) {
+        // 忽略
+      }
+    }
+  }
+  return true;
+}
+
 // 对 selectors 数组中的每个候选，依次尝试：
 //   1) CSS 选择器：document.querySelector(sel)
 //   2) XPath：把 sel 当作 XPath 表达式，document.evaluate(...)
 //   3) 文本包含：找出 textContent 包含 sel 的元素（用 XPath contains 实现）
 // 返回第一个命中的元素；都没有则 null。
-function findFirstElement(selectors) {
+function findFirstElement(selectors, requireVisible) {
   var list = Array.isArray(selectors) ? selectors : [selectors];
   for (var i = 0; i < list.length; i++) {
     var el = trySelect(String(list[i]));
-    if (el) return el;
+    if (el) {
+      if (requireVisible && !isElementVisible(el)) {
+        continue;
+      }
+      return el;
+    }
   }
   return null;
 }
@@ -129,10 +155,11 @@ function handleWaitFor(msg, sendResponse) {
   var selectors = resolveSelectors(msg);
   var timeout = typeof msg.timeout === 'number' ? msg.timeout : 5000;
   var interval = typeof msg.interval === 'number' ? msg.interval : 50;
+  var requireVisible = Boolean(msg.requireVisible);
   var start = Date.now();
 
   function poll() {
-    var el = findFirstElement(selectors);
+    var el = findFirstElement(selectors, requireVisible);
     if (el) {
       sendResponse({ ok: true });
       return;

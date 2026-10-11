@@ -213,6 +213,7 @@ export class Scraper {
           .split(',')
           .map((s) => s.trim())
           .filter(Boolean),
+        requireVisible: true,
         timeout: 3000,
       });
     } catch {

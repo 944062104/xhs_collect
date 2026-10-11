@@ -404,3 +404,23 @@ test('onMessage type：未命中 → { ok: false, error: SELECTOR_NOT_FOUND }', 
   assert.equal(resp.ok, false);
   assert.equal(resp.error, 'SELECTOR_NOT_FOUND');
 });
+
+test('onMessage waitFor：requireVisible 为 true 时跳过 display:none 等不可见元素', async () => {
+  resetDoc();
+  const hiddenEl = makeElement('div');
+  hiddenEl.offsetParent = null; // 模拟不可见（在真实 DOM 中 display:none 导致 offsetParent 为 null）
+  hiddenEl.style = { display: 'none' };
+  docState.cssMatches['.modal-mask'] = hiddenEl;
+
+  // 1. 常规 waitFor（未要求 requireVisible）：依然能命中
+  const normal = dispatch({ action: 'waitFor', selectors: ['.modal-mask'], timeout: 100 });
+  const normalResp = await normal.response;
+  assert.equal(normalResp.ok, true);
+
+  // 2. 携带 requireVisible: true：跳过不可见元素，超时并返回 TIMEOUT
+  const visibleOnly = dispatch({ action: 'waitFor', selectors: ['.modal-mask'], requireVisible: true, timeout: 100 });
+  const visibleResp = await visibleOnly.response;
+  assert.equal(visibleResp.ok, false);
+  assert.equal(visibleResp.error, 'TIMEOUT');
+});
+
