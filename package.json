@@ -10,6 +10,7 @@
     "test": "node --test"
   },
   "devDependencies": {
-    "fake-indexeddb": "^6.2.5"
+    "fake-indexeddb": "^6.2.5",
+    "puppeteer-core": "^25.13.0"
   }
 }
