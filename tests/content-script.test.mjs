@@ -33,6 +33,8 @@ const docState = {
   cssMatches: {}, // sel -> element（CSS 命中）
   xpathMatches: {}, // xpathExpr -> element（XPath 命中）
   textMatches: {}, // needle -> element（文本包含命中）
+  textMatchesDeep: {}, // needle -> [ancestor, deepest, ...]（多节点快照）
+  setterCalls: 0, // 原生 value setter 被调用次数（验证 React 路径）
   cssThrows: false, // 模拟 querySelector 抛 SyntaxError（非法选择器）
   scrollTotal: 0,
   scrollCalls: 0,
@@ -68,11 +70,15 @@ const mockWindow = {
   KeyboardEvent: MockKeyboardEvent,
   Event: MockEvent,
   // React 受控组件的原生 value 描述符（用于 setValue 走原生 setter 分支）。
+  // 必须是真正的存取器属性，否则 getOwnPropertyDescriptor().set 为 undefined。
   HTMLInputElement: {
     prototype: {
-      value: {
-        set(v) { this._value = v; },
-        get() { return this._value; },
+      get value() {
+        return this._value;
+      },
+      set value(v) {
+        docState.setterCalls += 1;
+        this._value = v;
       },
     },
   },
@@ -94,6 +100,10 @@ const mockDocument = {
     const m = TEXT_XPATH_RE.exec(xpathExpr);
     if (m) {
       const needle = m[1];
+      if (docState.textMatchesDeep[needle]) {
+        const list = docState.textMatchesDeep[needle];
+        return { snapshotLength: list.length, snapshotItem: (i) => list[i], singleNodeValue: list[0], iterateNext: () => null };
+      }
       if (docState.textMatches[needle]) {
         const el = docState.textMatches[needle];
         // 文本包含路径：返回 snapshot 形态（source 取最深节点 snapshotItem(length-1)）。
@@ -177,6 +187,8 @@ function resetDoc() {
   docState.cssMatches = {};
   docState.xpathMatches = {};
   docState.textMatches = {};
+  docState.textMatchesDeep = {};
+  docState.setterCalls = 0;
   docState.cssThrows = false;
   docState.scrollTotal = 0;
   docState.scrollCalls = 0;
@@ -246,6 +258,15 @@ test('findFirstElement：CSS 抛错且 XPath 无匹配时回退到文本包含',
   docState.textMatches['登录'] = textEl;
   const got = sandbox.findFirstElement(['登录']);
   assert.equal(got, textEl, 'CSS 抛错、XPath 无果时应回退到文本包含匹配');
+});
+
+test('findFirstElement：文本包含命中多个节点时返回【最内层】节点', () => {
+  resetDoc();
+  const ancestor = makeElement('div', { textContent: '登录相关段落' });
+  const deep = makeElement('button', { textContent: '立即登录' });
+  docState.textMatchesDeep['登录'] = [ancestor, deep];
+  const got = sandbox.findFirstElement(['登录']);
+  assert.equal(got, deep, '应返回文档序最后的（最内层）节点而非外层包裹元素');
 });
 
 // ============================================================================
@@ -370,6 +391,7 @@ test('onMessage type：命中输入框 → 写入 value 并派发 input/change �
   const resp = await response;
   assert.equal(resp.ok, true);
   assert.equal(input.value, '护肤推荐', '应把文本写入输入框 value');
+  assert.ok(docState.setterCalls >= 1, '应通过原生原型 setter 写入（兼容 React 受控组件）');
   const types = docState.dispatched.map((e) => e.type);
   assert.ok(types.includes('input'), '应派发 input 事件');
   assert.ok(types.includes('change'), '应派发 change 事件');
