@@ -453,6 +453,9 @@ export class Scraper {
         task.progress.notesCollected += 1;
         task.progress.commentsCollected += Array.isArray(comments) ? comments.length : 0;
         task.progress.currentTitle = detail.title || '';
+
+        this._throwIfCancelled(task.id);
+
         task.progress.stepMessage = `已抓取：${detail.title ? `《${detail.title.slice(0, 15)}...》` : `第 ${i + 1} 篇`}`;
         await this.taskManager.saveProgress(task, {
           currentNoteIndex: task.progress.currentNoteIndex,
@@ -499,7 +502,15 @@ export class Scraper {
       await this.taskManager.saveProgress(task, { phase: 'done' });
       await this.taskManager.updateStatus(task, 'completed');
     } catch (err) {
-      if (err && err.isCancellation) return; // 取消：保持 cancelled 状态，不记为失败
+      if (err && err.isCancellation) {
+        if (this._finishedEarly && this._finishedEarly.has(task.id)) {
+          task.progress.phase = 'done';
+          task.progress.stepMessage = `提前完成采集，已保存全部 ${task.progress.notesCollected} 篇数据`;
+          await this.taskManager.saveProgress(task, { phase: 'done', stepMessage: task.progress.stepMessage });
+          await this.taskManager.updateStatus(task, 'completed');
+        }
+        return;
+      }
       if (err && err.code === 'AUTH_REQUIRED') {
         // 未登录拦截：标记 failed 且记录 AUTH_REQUIRED（区别于 generic fatal）。
         task.errors.push({
@@ -535,6 +546,7 @@ export class Scraper {
       await this.taskManager.updateStatus(task, 'failed');
     } finally {
       this._cancelled.delete(task.id); // 释放取消标志，避免长生命周期 SW 中集合无限增长
+      if (this._finishedEarly) this._finishedEarly.delete(task.id);
       await this._cleanupTab();
     }
   }
@@ -556,7 +568,15 @@ export class Scraper {
       await this.taskManager.saveProgress(task, { phase: 'done' });
       await this.taskManager.updateStatus(task, 'completed');
     } catch (err) {
-      if (err && err.isCancellation) return; // 取消：保持 cancelled 状态，不记为失败
+      if (err && err.isCancellation) {
+        if (this._finishedEarly && this._finishedEarly.has(task.id)) {
+          task.progress.phase = 'done';
+          task.progress.stepMessage = `提前完成采集，已保存全部 ${task.progress.notesCollected} 篇数据`;
+          await this.taskManager.saveProgress(task, { phase: 'done', stepMessage: task.progress.stepMessage });
+          await this.taskManager.updateStatus(task, 'completed');
+        }
+        return;
+      }
       if (err && err.code === 'AUTH_REQUIRED') {
         // 未登录拦截：标记 failed 且记录 AUTH_REQUIRED（区别于 generic fatal）。
         task.errors.push({
@@ -595,6 +615,7 @@ export class Scraper {
       await this.taskManager.updateStatus(task, 'failed');
     } finally {
       this._cancelled.delete(task.id); // 释放取消标志，避免长生命周期 SW 中集合无限增长
+      if (this._finishedEarly) this._finishedEarly.delete(task.id);
       await this._cleanupTab();
     }
   }
@@ -608,6 +629,23 @@ export class Scraper {
     this._cancelled.add(taskId);
     try {
       await this.taskManager.updateStatus(task, 'cancelled');
+    } catch (err) {
+      this._cancelled.delete(taskId);
+      throw err;
+    }
+    return task;
+  }
+
+  async finishEarly(taskId) {
+    const task = await this.taskManager.getTask(taskId);
+    if (!task) throw new Error(`finishEarly: 任务 ${taskId} 不存在`);
+    if (task.status !== 'running') return task;
+    this._cancelled.add(taskId);
+    try {
+      task.progress.phase = 'done';
+      task.progress.stepMessage = `提前完成采集，已保存全部 ${task.progress.notesCollected} 篇数据`;
+      await this.taskManager.saveProgress(task, { phase: 'done', stepMessage: task.progress.stepMessage });
+      await this.taskManager.updateStatus(task, 'completed');
     } catch (err) {
       this._cancelled.delete(taskId);
       throw err;

@@ -105,6 +105,31 @@ function notesToJson(notes) {
   return JSON.stringify(Array.isArray(notes) ? notes : [], null, 2);
 }
 
+const COMMENT_CSV_COLUMNS = ['noteId', 'noteTitle', 'noteUrl', 'commentAuthor', 'commentContent', 'commentLikes', 'commentTime'];
+
+// 将笔记及其评论打平成独立的评论明细 CSV（便于受众情感与互动分析）
+function commentsToCsv(notes) {
+  const safeNotes = Array.isArray(notes) ? notes : [];
+  const rows = [];
+  for (const note of safeNotes) {
+    const comments = note.commentList ?? note.comments ?? [];
+    if (Array.isArray(comments)) {
+      for (const c of comments) {
+        rows.push([
+          csvField(note.id),
+          csvField(note.title),
+          csvField(note.url),
+          csvField(c.author),
+          csvField(c.content ?? c.text),
+          csvField(c.likes ?? 0),
+          csvField(c.publishedAt ?? c.time ?? ''),
+        ].join(','));
+      }
+    }
+  }
+  return [COMMENT_CSV_COLUMNS.join(','), ...rows].join('\n');
+}
+
 // 辅助：HTML 字符串实体转义
 function escapeHtml(str) {
   if (str == null) return '';
@@ -173,8 +198,10 @@ function initPopup() {
     previewSection: $('previewSection'),
     previewCount: $('previewCount'),
     previewList: $('previewList'),
+    finishEarlyBtn: $('finishEarlyBtn'),
     exportJsonBtn: $('exportJsonBtn'),
     exportCsvBtn: $('exportCsvBtn'),
+    exportCommentsBtn: $('exportCommentsBtn'),
     advancedToggle: $('advancedToggle'),
     advancedPanel: $('advancedPanel'),
     apiBase: $('apiBase'),
@@ -267,11 +294,37 @@ function initPopup() {
     els.previewSection.style.display = 'flex';
   }
 
-  function setRunningUI(running) {
+  function updateExportButtons(notesCount) {
+    const count = Number(notesCount) || 0;
+    const canExport = count > 0 && !!taskId;
+    els.exportJsonBtn.disabled = !canExport;
+    els.exportCsvBtn.disabled = !canExport;
+    if (els.exportCommentsBtn) {
+      els.exportCommentsBtn.disabled = !canExport;
+    }
+    if (count > 0) {
+      els.exportCsvBtn.textContent = `导出笔记 CSV (${count}篇)`;
+      els.exportJsonBtn.textContent = `导出 JSON (${count}篇)`;
+      if (els.exportCommentsBtn) els.exportCommentsBtn.textContent = '导出评论 CSV';
+    } else {
+      els.exportCsvBtn.textContent = '导出笔记 CSV';
+      els.exportJsonBtn.textContent = '导出 JSON';
+      if (els.exportCommentsBtn) els.exportCommentsBtn.textContent = '导出评论 CSV';
+    }
+  }
+
+  function setRunningUI(running, notesCount = 0) {
     els.startBtn.disabled = running;
     els.cancelBtn.disabled = !running;
-    els.exportJsonBtn.disabled = running || !taskId;
-    els.exportCsvBtn.disabled = running || !taskId;
+    if (els.finishEarlyBtn) {
+      const count = Number(notesCount) || 0;
+      els.finishEarlyBtn.style.display = running && count > 0 ? 'block' : 'none';
+      if (running) {
+        els.finishEarlyBtn.disabled = false;
+        els.finishEarlyBtn.textContent = '就采这些，结束采集';
+      }
+    }
+    updateExportButtons(notesCount);
     if (els.newBtn) {
       els.newBtn.style.display = !running && taskId ? 'block' : 'none';
     }
@@ -307,17 +360,29 @@ function initPopup() {
       const step = resp.progress?.stepMessage || null;
       setProgress(pct, label, step);
 
+      const count = resp.notesCount ?? resp.progress?.notesCollected ?? 0;
+      updateExportButtons(count);
+      if (els.finishEarlyBtn) {
+        els.finishEarlyBtn.style.display = (resp.status === 'running' && count > 0) ? 'block' : 'none';
+      }
+
       // 未登录拦截：明确提示登录，停止轮询（不再无限重试）。
       if (isAuthRequired(resp)) {
         stopPolling();
-        setRunningUI(false);
+        setRunningUI(false, count);
         showError('请在小红书网页端登录后再采集');
         return;
       }
 
       if (['completed', 'failed', 'cancelled'].includes(resp.status)) {
         stopPolling();
-        setRunningUI(false);
+        setRunningUI(false, count);
+        if (resp.status === 'failed') {
+          const errMsg = resp.errors && resp.errors.length > 0
+            ? resp.errors[resp.errors.length - 1].message
+            : '采集任务失败，请检查网页状态';
+          showError(errMsg);
+        }
         // 完成后拉取预览
         loadLatestTask();
       }
@@ -346,11 +411,19 @@ function initPopup() {
       setProgress(pct, label, step);
       renderPreviews(resp.notes);
 
+      const notes = resp.notes || [];
+      const count = notes.length || task.progress?.notesCollected || 0;
       if (task.status === 'running') {
-        setRunningUI(true);
+        setRunningUI(true, count);
         startPolling();
       } else {
-        setRunningUI(false);
+        setRunningUI(false, count);
+        if (task.status === 'failed') {
+          const errMsg = task.errors && task.errors.length > 0
+            ? task.errors[task.errors.length - 1].message
+            : '采集任务失败，请检查网页状态';
+          showError(errMsg);
+        }
       }
     });
   }
@@ -455,7 +528,7 @@ function initPopup() {
 
   // --- 导出：经由 SW 序列化后在本地下载（纯前端下载） ---
   function fallbackBlobDownload(filename, mime, text) {
-    const blob = new Blob([text], { type: mime });
+    const blob = new Blob([text], { type: mime + ';charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -467,14 +540,16 @@ function initPopup() {
   }
 
   function downloadString(filename, mime, text) {
+    const isCsv = mime.includes('csv') || filename.endsWith('.csv');
+    const content = isCsv && !text.startsWith('\uFEFF') ? '\uFEFF' + text : text;
     if (chrome && chrome.downloads && chrome.downloads.download) {
-      const dataUrl = 'data:' + mime + ';charset=utf-8,' + encodeURIComponent(text);
+      const dataUrl = 'data:' + mime + ';charset=utf-8,' + encodeURIComponent(content);
       chrome.downloads.download({ url: dataUrl, filename, saveAs: true }, () => {
-        if (chrome.runtime.lastError) fallbackBlobDownload(filename, mime, text);
+        if (chrome.runtime.lastError) fallbackBlobDownload(filename, mime, content);
       });
       return;
     }
-    fallbackBlobDownload(filename, mime, text);
+    fallbackBlobDownload(filename, mime, content);
   }
 
   function onExport(format) {
@@ -487,7 +562,7 @@ function initPopup() {
         showError('导出失败：' + (resp ? resp.error : '通信错误'));
         return;
       }
-      const mime = format === 'csv' ? 'text/csv' : 'application/json';
+      const mime = (format === 'csv' || format === 'comments_csv') ? 'text/csv' : 'application/json';
       downloadString(resp.filename || `xhs_${taskId}.${format}`, mime, resp.data);
     });
   }
@@ -495,9 +570,26 @@ function initPopup() {
   // --- 事件绑定 ---
   els.startBtn.addEventListener('click', onStart);
   els.cancelBtn.addEventListener('click', onCancel);
+  if (els.finishEarlyBtn) {
+    els.finishEarlyBtn.addEventListener('click', () => {
+      if (!taskId) return;
+      els.finishEarlyBtn.disabled = true;
+      els.finishEarlyBtn.textContent = '正在保存并结束...';
+      chrome.runtime.sendMessage({ type: 'FINISH_EARLY_TASK', taskId }, (resp) => {
+        if (chrome.runtime.lastError || !resp || !resp.ok) {
+          showError('提前结束失败：' + (resp?.error || '通信异常'));
+          els.finishEarlyBtn.disabled = false;
+          els.finishEarlyBtn.textContent = '就采这些，结束采集';
+        } else {
+          pollOnce();
+        }
+      });
+    });
+  }
   if (els.newBtn) els.newBtn.addEventListener('click', onNewTask);
   els.exportJsonBtn.addEventListener('click', () => onExport('json'));
   els.exportCsvBtn.addEventListener('click', () => onExport('csv'));
+  if (els.exportCommentsBtn) els.exportCommentsBtn.addEventListener('click', () => onExport('comments_csv'));
   if (els.testLlmBtn) els.testLlmBtn.addEventListener('click', onTestLlm);
 
   if (els.protocol) els.protocol.addEventListener('change', saveConfig);
@@ -552,6 +644,7 @@ if (typeof module !== 'undefined' && module.exports) {
     progressToPercent,
     statusLabel,
     notesToCsv,
+    commentsToCsv,
     notesToJson,
     isAuthRequired,
     formatDetailStatus,

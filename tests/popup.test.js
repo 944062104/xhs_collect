@@ -12,6 +12,7 @@ const {
   progressToPercent,
   statusLabel,
   notesToCsv,
+  commentsToCsv,
   notesToJson,
   isAuthRequired,
   formatDetailStatus,
@@ -262,5 +263,42 @@ test('renderNotePreviewRow 转义 HTML 并生成预览卡片内容', () => {
   assert.ok(html.includes('博主&amp;团队'), '应转义特殊字符');
   assert.ok(html.includes('120 赞'), '应显示点赞数');
   assert.ok(html.includes('https://www.xiaohongshu.com/explore/123'), '应含链接');
+});
+
+// ---------------------------------------------------------------------------
+// commentsToCsv
+// ---------------------------------------------------------------------------
+
+test('commentsToCsv 空数组时输出完整表头', () => {
+  const csv = commentsToCsv([]);
+  assert.equal(
+    csv,
+    'noteId,noteTitle,noteUrl,commentAuthor,commentContent,commentLikes,commentTime'
+  );
+});
+
+test('commentsToCsv 展平多篇笔记的评论为独立行', () => {
+  const notes = [
+    {
+      id: 'n1',
+      title: '笔记1',
+      url: 'https://xhs.com/1',
+      commentList: [
+        { author: '张三', text: '太好用了！', likes: 10, publishedAt: '昨天' },
+        { author: '李四', text: '马克,备用', likes: 0, publishedAt: '前天' },
+      ],
+    },
+    {
+      id: 'n2',
+      title: '笔记2',
+      url: 'https://xhs.com/2',
+      commentList: [],
+    },
+  ];
+  const csv = commentsToCsv(notes);
+  const lines = csv.split('\n');
+  assert.equal(lines.length, 3, '表头 + 2条评论行');
+  assert.ok(lines[1].includes('张三') && lines[1].includes('太好用了！'));
+  assert.ok(lines[2].includes('李四') && lines[2].includes('"马克,备用"'));
 });
 

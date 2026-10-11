@@ -79,7 +79,21 @@ function makeFakeScraper(storage) {
     return taskId;
   };
   cancel.calls = calls.cancel;
-  return { run, resume, cancel, calls };
+  calls.finishEarly = [];
+  const finishEarly = async (taskId) => {
+    calls.finishEarly.push(taskId);
+    if (storage) {
+      const task = await storage.getTask(taskId);
+      if (task) {
+        task.status = 'completed';
+        task.completedAt = Date.now();
+        await storage.saveTask(task);
+      }
+    }
+    return taskId;
+  };
+  finishEarly.calls = calls.finishEarly;
+  return { run, resume, cancel, finishEarly, calls };
 }
 
 // sendResponse 记录器：reply 为最后一次调用；responses 为全部调用。
@@ -302,6 +316,29 @@ test('CANCEL_TASK 调用 fake.cancel 并回复 ok:true', async () => {
   assert.deepEqual(sendResponse.last(), { ok: true });
 });
 
+test('FINISH_EARLY_TASK 调用 fake.finishEarly 并将任务标记为 completed', async () => {
+  const { storage, fake, handler } = await buildFixture();
+  await storage.saveTask({
+    id: 'task_early',
+    status: 'running',
+    keyword: 'x',
+    config: {},
+    progress: { notesCollected: 3 },
+    timestamps: { createdAt: 1, startedAt: 1, completedAt: null },
+    errors: [],
+  });
+  const sendResponse = makeSendResponse();
+
+  await handler({ type: 'FINISH_EARLY_TASK', taskId: 'task_early' }, {}, sendResponse);
+
+  assert.equal(fake.calls.finishEarly.length, 1);
+  assert.equal(fake.calls.finishEarly[0], 'task_early');
+  assert.deepEqual(sendResponse.last(), { ok: true, taskId: 'task_early' });
+
+  const task = await storage.getTask('task_early');
+  assert.equal(task.status, 'completed', '提前结束应将任务转为 completed 终态');
+});
+
 // ---------------------------------------------------------------------------
 // (e) GET_PROGRESS（已 seed 任务 + 一条 note）→ status / progress / notesCount
 // ---------------------------------------------------------------------------
@@ -434,6 +471,48 @@ test('EXPORT_DATA csv 含表头 + 数据行，且正确转义', async () => {
   assert.ok(lines[1].includes('"Hello, ""World"""'), `标题应被正确转义，实际行: ${lines[1]}`);
   // commentsCount 应等于 commentList 长度
   assert.ok(lines[1].endsWith(',9'), `行尾应为 collectedAt=9，实际: ${lines[1]}`);
+});
+
+test('EXPORT_DATA comments_csv 展平评论并输出完整评论明细表', async () => {
+  const { storage, handler } = await buildFixture();
+  await storage.saveTask({
+    id: 'task_comments_csv',
+    status: 'completed',
+    keyword: 'k',
+    config: {},
+    progress: {},
+    timestamps: { createdAt: 1, startedAt: 1, completedAt: 2 },
+    errors: [],
+  });
+  await storage.saveNote({
+    id: 'note_cm_1',
+    taskId: 'task_comments_csv',
+    url: 'http://x/cm_1',
+    title: '精选笔记',
+    content: '正文',
+    author: '博主',
+    likes: 10,
+    tags: ['护肤'],
+    commentList: [
+      { author: '小红', content: '好用！', likes: 5, publishedAt: '今天' },
+      { author: '小绿', text: '求链接', likes: 1, publishedAt: '昨天' },
+    ],
+    collectedAt: 100,
+  });
+
+  const sendResponse = makeSendResponse();
+  await handler({ type: 'EXPORT_DATA', taskId: 'task_comments_csv', format: 'comments_csv' }, {}, sendResponse);
+
+  const reply = sendResponse.last();
+  assert.equal(reply.ok, true);
+  assert.equal(reply.format, 'comments_csv');
+  assert.equal(reply.filename, 'xhs_task_comments_csv_comments.csv');
+
+  const lines = reply.data.split('\n');
+  assert.equal(lines.length, 3, '应为 表头 + 2 条评论行');
+  assert.equal(lines[0], 'noteId,noteTitle,noteUrl,commentAuthor,commentContent,commentLikes,commentTime');
+  assert.ok(lines[1].includes('note_cm_1') && lines[1].includes('小红') && lines[1].includes('好用！'));
+  assert.ok(lines[2].includes('note_cm_1') && lines[2].includes('小绿') && lines[2].includes('求链接'));
 });
 
 test('EXPORT_DATA 无任务时回复 NO_TASK', async () => {

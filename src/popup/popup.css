@@ -278,10 +278,24 @@ input[type="checkbox"] {
 /* 导出区 */
 .export {
   display: flex;
-  gap: 10px;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 .export .btn {
   flex: 1;
+  min-width: 90px;
+  padding: 8px 6px;
+  font-size: 12px;
+}
+
+.btn-warning {
+  background: #fff;
+  color: #b45309;
+  border: 1px solid #f59e0b;
+  font-weight: 600;
+}
+.btn-warning:hover:not(:disabled) {
+  background: #fffbeb;
 }
 
 /* 高级抽屉与测试行 */

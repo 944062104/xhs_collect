@@ -99,6 +99,32 @@ async function cancelTask(msg, sendResponse) {
   }
 }
 
+async function finishEarlyTask(msg, sendResponse) {
+  try {
+    const taskId = msg.taskId || activeRun;
+    if (!taskId) {
+      sendResponse({ ok: false, error: 'NO_TASK' });
+      return;
+    }
+    const llmConfig = await resolveLlmConfig();
+    const apiKey = (typeof getApiKey === 'function' ? await getApiKey() : '') || llmConfig.apiKey;
+    const sc = scraper ?? makeScraper({ ...llmConfig, apiKey });
+    if (typeof sc.finishEarly === 'function') {
+      await sc.finishEarly(taskId);
+    } else {
+      const task = await storage.getTask(taskId);
+      if (task && task.status === 'running') {
+        task.status = 'completed';
+        task.completedAt = Date.now();
+        await storage.saveTask(task);
+      }
+    }
+    sendResponse({ ok: true, taskId });
+  } catch (err) {
+    sendResponse({ ok: false, error: err?.message ?? 'FINISH_EARLY_FAILED' });
+  }
+}
+
 async function getProgress(msg, sendResponse) {
   const task = msg.taskId ? await storage.getTask(msg.taskId) : await storage.getRunningTask();
   if (!task) {
@@ -147,6 +173,30 @@ function toCsv(notes) {
   return [header, ...rows].join('\n');
 }
 
+const COMMENT_CSV_COLUMNS = ['noteId', 'noteTitle', 'noteUrl', 'commentAuthor', 'commentContent', 'commentLikes', 'commentTime'];
+
+function toCommentsCsv(notes) {
+  const header = COMMENT_CSV_COLUMNS.join(',');
+  const rows = [];
+  for (const note of (notes || [])) {
+    const comments = note.commentList ?? note.comments ?? [];
+    if (Array.isArray(comments)) {
+      for (const c of comments) {
+        rows.push([
+          csvField(note.id),
+          csvField(note.title),
+          csvField(note.url),
+          csvField(c.author),
+          csvField(c.content ?? c.text),
+          csvField(c.likes ?? 0),
+          csvField(c.publishedAt ?? c.time ?? ''),
+        ].join(','));
+      }
+    }
+  }
+  return [header, ...rows].join('\n');
+}
+
 async function exportData(msg, sendResponse) {
   const task = await storage.getTask(msg.taskId);
   if (!task) {
@@ -154,9 +204,21 @@ async function exportData(msg, sendResponse) {
     return;
   }
   const notes = await storage.getNotesByTaskId(msg.taskId);
-  const format = msg.format === 'csv' ? 'csv' : 'json';
-  const data = format === 'csv' ? toCsv(notes) : JSON.stringify(notes, null, 2);
-  sendResponse({ ok: true, format, data, filename: `xhs_${msg.taskId}.${format}` });
+  let format = msg.format;
+  let data;
+  let filename;
+  if (format === 'comments_csv') {
+    data = toCommentsCsv(notes);
+    filename = `xhs_${msg.taskId}_comments.csv`;
+  } else if (format === 'csv') {
+    data = toCsv(notes);
+    filename = `xhs_${msg.taskId}.csv`;
+  } else {
+    format = 'json';
+    data = JSON.stringify(notes, null, 2);
+    filename = `xhs_${msg.taskId}.json`;
+  }
+  sendResponse({ ok: true, format, data, filename });
 }
 
 async function testLlmConfig(msg, sendResponse) {
@@ -222,6 +284,9 @@ async function handleMessage(message, _sender, sendResponse) {
         break;
       case 'CANCEL_TASK':
         await cancelTask(message, sendResponse);
+        break;
+      case 'FINISH_EARLY_TASK':
+        await finishEarlyTask(message, sendResponse);
         break;
       case 'GET_PROGRESS':
         await getProgress(message, sendResponse);

@@ -34,6 +34,7 @@
         <button id="startBtn" class="btn btn-primary">开始一键采集</button>
         <button id="cancelBtn" class="btn btn-ghost" disabled>取消</button>
       </div>
+      <button id="finishEarlyBtn" class="btn btn-warning" style="display:none;width:100%;margin-top:6px;">就采这些，结束采集</button>
       <button id="newBtn" class="btn btn-secondary-ghost" style="display:none">新建采集 / 清空当前</button>
     </section>
 
@@ -60,8 +61,9 @@
 
     <!-- 导出区 -->
     <section class="export">
+      <button id="exportCsvBtn" class="btn btn-outline" disabled>导出笔记 CSV</button>
+      <button id="exportCommentsBtn" class="btn btn-outline" disabled>导出评论 CSV</button>
       <button id="exportJsonBtn" class="btn btn-outline" disabled>导出 JSON</button>
-      <button id="exportCsvBtn" class="btn btn-outline" disabled>导出 CSV</button>
     </section>
 
     <!-- 高级抽屉（折叠） -->

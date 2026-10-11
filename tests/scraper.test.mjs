@@ -496,4 +496,35 @@ test('(n) 详情阶段遭遇小红书频控阻断（扫码/当前笔记暂时无
   assert.deepEqual(tabs.ops.removed, [1], '频控熔断后应安全关闭标签页');
 });
 
+test('(o) finishEarly(taskId) 允许用户提前结束采集并将任务以 completed 状态归档保存', async () => {
+  const tabs = makeTabs();
+  const llm = makeLlm({
+    noteUrls: [
+      { url: 'https://xhs.com/explore/1', title: 't1' },
+      { url: 'https://xhs.com/explore/2', title: 't2' },
+      { url: 'https://xhs.com/explore/3', title: 't3' },
+    ],
+  });
+  const { scraper, storage } = makeScraper({ tabs, llm });
+
+  const task = baseTask('task_early_end', { config: { notesLimit: 10 } });
+  await storage.saveTask(task);
+
+  // 在第一条采集过程中调用 finishEarly
+  const origExtract = llm.extractNoteDetail;
+  llm.extractNoteDetail = async (html) => {
+    const res = await origExtract(html);
+    // 第一篇采完后用户点击「提前完成」
+    await scraper.finishEarly(task.id);
+    return res;
+  };
+
+  await scraper.run(task);
+
+  const finalTask = await storage.getTask('task_early_end');
+  assert.equal(finalTask.status, 'completed', '提前结束的任务应处于 completed 状态');
+  assert.ok(finalTask.progress.stepMessage.includes('提前完成采集'), 'stepMessage 应提示已保存全部数据');
+  assert.deepEqual(tabs.ops.removed, [1], '提前结束后标签页应安全关闭');
+});
+
 
