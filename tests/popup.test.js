@@ -14,6 +14,8 @@ const {
   notesToCsv,
   notesToJson,
   isAuthRequired,
+  formatDetailStatus,
+  renderNotePreviewRow,
 } = require('../src/popup/popup.js');
 
 // ---------------------------------------------------------------------------
@@ -215,3 +217,50 @@ test('isAuthRequired 在其它错误或无错误时返回 false', () => {
   assert.equal(isAuthRequired(null), false);
   assert.equal(isAuthRequired(undefined), false);
 });
+
+// ---------------------------------------------------------------------------
+// formatDetailStatus
+// ---------------------------------------------------------------------------
+
+test('formatDetailStatus 优先展示具体步骤描述 stepMessage', () => {
+  const resp = {
+    ok: true,
+    status: 'running',
+    notesCount: 2,
+    progress: {
+      stepMessage: '正在抓取第 2/5 篇详情...',
+      currentTitle: '小红书护肤心得',
+    },
+  };
+  const str = formatDetailStatus(resp);
+  assert.equal(str, '采集中 · 正在抓取第 2/5 篇详情...');
+});
+
+test('formatDetailStatus 无 stepMessage 时回退到状态与篇数', () => {
+  const resp = {
+    ok: true,
+    status: 'completed',
+    notesCount: 5,
+  };
+  const str = formatDetailStatus(resp);
+  assert.equal(str, '已完成（共采集 5 篇）');
+});
+
+// ---------------------------------------------------------------------------
+// renderNotePreviewRow
+// ---------------------------------------------------------------------------
+
+test('renderNotePreviewRow 转义 HTML 并生成预览卡片内容', () => {
+  const note = {
+    title: '特惠<script>',
+    author: '博主&团队',
+    likes: 120,
+    url: 'https://www.xiaohongshu.com/explore/123',
+  };
+  const html = renderNotePreviewRow(note);
+  assert.ok(html.includes('&lt;script&gt;'), '应转义 HTML 标签');
+  assert.ok(html.includes('博主&amp;团队'), '应转义特殊字符');
+  assert.ok(html.includes('120 赞'), '应显示点赞数');
+  assert.ok(html.includes('https://www.xiaohongshu.com/explore/123'), '应含链接');
+});
+

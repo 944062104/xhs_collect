@@ -105,6 +105,53 @@ function notesToJson(notes) {
   return JSON.stringify(Array.isArray(notes) ? notes : [], null, 2);
 }
 
+// 辅助：HTML 字符串实体转义
+function escapeHtml(str) {
+  if (str == null) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+// 组合格式化详细状态描述
+function formatDetailStatus(resp) {
+  if (!resp) return '待命';
+  const label = statusLabel(resp.status);
+  const step = resp.progress?.stepMessage;
+  if (step && resp.status === 'running') {
+    return `${label} · ${step}`;
+  }
+  const count = resp.notesCount ?? resp.progress?.notesCollected ?? 0;
+  if (resp.status === 'completed') {
+    return `${label}（共采集 ${count} 篇）`;
+  }
+  return `${label}（已采集 ${count} 篇）`;
+}
+
+// 生成单条笔记预览条目的 HTML 片段
+function renderNotePreviewRow(note) {
+  if (!note) return '';
+  const title = escapeHtml(note.title || '（无标题）');
+  const author = escapeHtml(note.author || '未知作者');
+  const likes = Number(note.likes) || 0;
+  const url = escapeHtml(note.url || '#');
+  return `
+    <div class="note-item">
+      <div class="note-main">
+        <a class="note-title" href="${url}" target="_blank" title="${title}">${title}</a>
+        <div class="note-sub">
+          <span class="note-author">👤 ${author}</span>
+          <span class="note-likes">❤️ ${likes} 赞</span>
+        </div>
+      </div>
+    </div>
+  `.trim();
+}
+
+
 // ---------------------------------------------------------------------------
 // 浏览器接线（仅在此块内访问 document / chrome）
 // ---------------------------------------------------------------------------
@@ -386,5 +433,8 @@ if (typeof module !== 'undefined' && module.exports) {
     notesToCsv,
     notesToJson,
     isAuthRequired,
+    formatDetailStatus,
+    renderNotePreviewRow,
+    escapeHtml,
   };
 }
