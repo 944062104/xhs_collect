@@ -902,3 +902,50 @@ test('onMessage executeActionRecipe：执行指定选择器的拟人交互', asy
   assert.equal(resp.ok, true);
   assert.equal(clicked, true, '应成功触发目标按钮点击');
 });
+
+test('onMessage applySearchFilters：依次点击多维筛选胶囊（排序/类型/时间）并收起', async () => {
+  resetDoc();
+  let filterBtnClicked = false;
+  let sortClicked = false;
+  let typeClicked = false;
+  let timeClicked = false;
+  let collapseClicked = false;
+
+  const filterBtn = makeElement('div', { textContent: ' 筛选 ', className: 'filter-btn-trigger' });
+  filterBtn.click = () => { filterBtnClicked = true; };
+
+  const sortBtn = makeElement('button', { textContent: '最多评论', className: 'capsule' });
+  sortBtn.click = () => { sortClicked = true; };
+
+  const typeBtn = makeElement('button', { textContent: '图文', className: 'capsule' });
+  typeBtn.click = () => { typeClicked = true; };
+
+  const timeBtn = makeElement('button', { textContent: '一周内', className: 'capsule' });
+  timeBtn.click = () => { timeClicked = true; };
+
+  const collapseBtn = makeElement('span', { textContent: '收起', className: 'collapse-btn' });
+  collapseBtn.click = () => { collapseClicked = true; };
+
+  docState.textMatches['筛选'] = filterBtn;
+  docState.allMatches = {
+    'button, div, span': [sortBtn, typeBtn, timeBtn, collapseBtn],
+  };
+
+  const { response } = dispatch({
+    action: 'applySearchFilters',
+    filters: {
+      sortType: 'comments_descending',
+      noteType: 'image',
+      publishTime: 'week',
+    },
+  });
+
+  const resp = await response;
+  assert.equal(resp.ok, true);
+  assert.equal(filterBtnClicked, true, '应主动展开筛选面板');
+  assert.equal(sortClicked, true, '应点击“最多评论”胶囊');
+  assert.equal(typeClicked, true, '应点击“图文”胶囊');
+  assert.equal(timeClicked, true, '应点击“一周内”胶囊');
+  assert.equal(collapseClicked, true, '应点击“收起”关闭浮层');
+});
+

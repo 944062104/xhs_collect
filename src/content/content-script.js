@@ -241,9 +241,25 @@ function handleScroll(msg, sendResponse) {
 // 判断是否为左侧/顶部分类导航栏（如 全部、图文、视频、用户）
 function isCategoryTabOrNav(el) {
   if (!el) return false;
+  var c = (el.className || '').toString();
+  if (/capsule|filter-item|sort-item|tag-item/.test(c)) return false;
+
+  // 若元素本身处于筛选/排序面板内部（如包含“笔记类型”或“排序依据”），绝非分类导航栏
+  var p = el.parentElement;
+  while (p && p !== document.body) {
+    var pTxt = p.textContent || '';
+    if (pTxt.includes('排序依据') || pTxt.includes('笔记类型') || pTxt.includes('发布时间')) {
+      return false;
+    }
+    var pCl = String(p.className || '');
+    if (/filter-box|filter-panel|filter-dropdown|sort-dropdown/.test(pCl)) {
+      return false;
+    }
+    p = p.parentElement;
+  }
+
   var t = (el.textContent || '').trim();
   if (/^(全部|图文|视频|用户)$/.test(t)) return true;
-  var c = (el.className || '').toString();
   if (/channel-filter|tab-list|nav-tabs/.test(c)) return true;
   // 若包含图文和视频，且不含筛选/排序
   if (t.indexOf('图文') !== -1 && t.indexOf('视频') !== -1 && t.indexOf('筛选') === -1 && t.indexOf('排序') === -1 && t.indexOf('最新') === -1) {
@@ -1385,6 +1401,88 @@ function handleExecuteActionRecipe(msg, sendResponse) {
   return false;
 }
 
+// applySearchFilters：在搜索结果页依次应用多维筛选（排序依据、笔记类型、发布时间等）并收起面板
+function handleApplySearchFilters(msg, sendResponse) {
+  var filters = msg.filters || {};
+
+  // 1. 若浮层未展开，先主动点击筛选按钮展开浮层
+  var popup = typeof findSortPopup === 'function' ? findSortPopup() : null;
+  var filterBtn = typeof findFilterToggleBtn === 'function' ? findFilterToggleBtn() : null;
+  if (!popup && filterBtn) {
+    triggerMouseClick(filterBtn);
+  }
+
+  // 映射目标文本
+  var targetsToClick = [];
+  if (filters.sortType && filters.sortType !== 'general') {
+    if (filters.sortType === 'popularity_descending') targetsToClick.push(['最多点赞', '最热']);
+    else if (filters.sortType === 'time_descending') targetsToClick.push(['最新', '最新发布']);
+    else if (filters.sortType === 'comments_descending') targetsToClick.push(['最多评论']);
+    else if (filters.sortType === 'collects_descending') targetsToClick.push(['最多收藏']);
+  }
+  if (filters.noteType && filters.noteType !== 'all') {
+    if (filters.noteType === 'video') targetsToClick.push(['视频']);
+    else if (filters.noteType === 'image') targetsToClick.push(['图文']);
+  }
+  if (filters.publishTime && filters.publishTime !== 'all') {
+    if (filters.publishTime === 'day') targetsToClick.push(['一天内']);
+    else if (filters.publishTime === 'week') targetsToClick.push(['一周内']);
+    else if (filters.publishTime === 'half_year') targetsToClick.push(['半年内']);
+  }
+  if (filters.searchScope && filters.searchScope !== 'all') {
+    if (filters.searchScope === 'seen') targetsToClick.push(['已看过']);
+    else if (filters.searchScope === 'unseen') targetsToClick.push(['未看过']);
+    else if (filters.searchScope === 'followed') targetsToClick.push(['已关注']);
+  }
+  if (filters.location && filters.location !== 'all') {
+    if (filters.location === 'same_city') targetsToClick.push(['同城']);
+    else if (filters.location === 'nearby') targetsToClick.push(['附近']);
+  }
+
+  var applied = {};
+
+  // 辅助：查找指定名称的胶囊按钮
+  function findCapsule(names) {
+    for (var j = 0; j < names.length; j++) {
+      var name = names[j];
+      var el = findFirstElement(["//*[normalize-space(.)='" + name + "']", name], false);
+      if (el && !isCategoryTabOrNav(el)) return el;
+    }
+    var all = document.querySelectorAll('button, div, span');
+    for (var i = 0; i < all.length; i++) {
+      var item = all[i];
+      if (!isElementVisible(item) || isCategoryTabOrNav(item)) continue;
+      var txt = (item.textContent || '').trim();
+      for (var k = 0; k < names.length; k++) {
+        if (txt === names[k]) return item;
+      }
+    }
+    return null;
+  }
+
+  // 依次点击选中的胶囊
+  for (var k = 0; k < targetsToClick.length; k++) {
+    var names = targetsToClick[k];
+    var el = findCapsule(names);
+    if (el) {
+      triggerMouseClick(el);
+      applied[names[0]] = true;
+    }
+  }
+
+  // 点击完成后，尝试点击“收起”按钮关闭面板
+  var collapseEl = findCapsule(['收起']);
+  if (!collapseEl) {
+    collapseEl = findFirstElement(["//*[normalize-space(.)='收起']", "收起"], false);
+  }
+  if (collapseEl) {
+    triggerMouseClick(collapseEl);
+  }
+
+  sendResponse({ ok: true, applied: applied });
+  return false;
+}
+
 // ----------------------------------------------------------------------------
 // 消息分发
 // ----------------------------------------------------------------------------
@@ -1420,6 +1518,8 @@ if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage)
         return handleEval(message, sendResponse);
       case 'setSearchSort':
         return handleSetSearchSort(message, sendResponse);
+      case 'applySearchFilters':
+        return handleApplySearchFilters(message, sendResponse);
       case 'getInteractiveRegionHtml':
         return handleGetInteractiveRegionHtml(message, sendResponse);
       case 'verifySelectors':
@@ -1444,6 +1544,7 @@ if (typeof module !== 'undefined' && module.exports) {
     handleGetNoteDetail: handleGetNoteDetail,
     handleGetComments: handleGetComments,
     handleSetSearchSort: handleSetSearchSort,
+    handleApplySearchFilters: handleApplySearchFilters,
     handleGetInteractiveRegionHtml: handleGetInteractiveRegionHtml,
     handleVerifySelectors: handleVerifySelectors,
     handleCheckGoalContract: handleCheckGoalContract,

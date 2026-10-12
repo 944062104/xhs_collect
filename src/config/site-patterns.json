@@ -78,7 +78,28 @@
               "最新发布",
               ".filter-box div[class*='sort']",
               "div[class*='sort']"
+            ],
+            "comments_descending": [
+              "//*[normalize-space(.)='最多评论']",
+              "//*[contains(normalize-space(.), '最多评论')]",
+              "最多评论"
+            ],
+            "collects_descending": [
+              "//*[normalize-space(.)='最多收藏']",
+              "//*[contains(normalize-space(.), '最多收藏')]",
+              "最多收藏"
             ]
+          },
+          "filterTabs": {
+            "noteType": {
+              "video": ["//*[normalize-space(.)='视频']", "视频"],
+              "image": ["//*[normalize-space(.)='图文']", "图文"]
+            },
+            "publishTime": {
+              "day": ["//*[normalize-space(.)='一天内']", "一天内"],
+              "week": ["//*[normalize-space(.)='一周内']", "一周内"],
+              "half_year": ["//*[normalize-space(.)='半年内']", "半年内"]
+            }
           }
         },
         "noteDetail": {
