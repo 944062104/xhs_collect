@@ -918,6 +918,101 @@ test('(aa) 目标导向自愈循环：基于 planGoalRemediation 动态研判与
   assert.deepEqual(dynamicRules.search.sortTabs.time_descending, ['.pill']);
 });
 
+test('(bb) 真实 LLMClient 契约兼容：接收扁平 {action, selector, reason} 能正确分发动作与记录流水', async () => {
+  const tabs = makeTabs();
+  let executedAction = null;
+  let contractStatus = false;
+
+  const origSend = tabs.sendMessage;
+  tabs.sendMessage = async (id, msg) => {
+    if (msg.action === 'checkGoalContract') {
+      return { ok: true, achieved: contractStatus };
+    }
+    if (msg.action === 'setSearchSort') {
+      return { ok: true, active: false };
+    }
+    if (msg.action === 'executeActionRecipe') {
+      executedAction = msg.recipe;
+      contractStatus = true;
+      return { ok: true, executed: true };
+    }
+    if (msg.action === 'getInteractiveRegionHtml') {
+      return { ok: true, html: '<div class="filter"></div>' };
+    }
+    return origSend(id, msg);
+  };
+
+  const llm = makeLlm();
+  // 模拟真实 LLMClient 的输出结构（无 nextAction 包裹，reason 代替 diagnosis）
+  llm.planGoalRemediation = async (goal, evidence) => {
+    return {
+      action: 'CLICK',
+      selector: ['.real-selector'],
+      reason: '定位到真实排序胶囊并点击',
+    };
+  };
+
+  const { scraper, storage } = makeScraper({ tabs, llm });
+  const task = baseTask('task_flat_contract', {
+    config: { notesLimit: 1, sortType: 'time_descending', forceAiRemediation: true },
+  });
+  await storage.saveTask(task);
+  await scraper.run(task);
+
+  assert.ok(executedAction, '应当派发 executeActionRecipe 动作');
+  assert.equal(executedAction.action, 'CLICK');
+  assert.deepEqual(executedAction.selector, ['.real-selector']);
+
+  const updatedTask = await storage.getTask('task_flat_contract');
+  const remState = updatedTask.progress.remediationState;
+  assert.ok(remState);
+  assert.equal(remState.finished, true, '自愈循环结束后应当标记 finished');
+  assert.equal(remState.achieved, true, '达成目标后应当标记 achieved');
+  assert.equal(remState.history[0].diagnosis, '定位到真实排序胶囊并点击', '应当从 reason 映射出真实 diagnosis');
+});
+
+test('(cc) 严格前置门禁：当自愈学习未达成契约时，严禁降级兜底采集，必须终止任务并标记 failed', async () => {
+  const tabs = makeTabs();
+  const origSend = tabs.sendMessage;
+  tabs.sendMessage = async (id, msg) => {
+    if (msg.action === 'checkGoalContract') {
+      return { ok: true, achieved: false };
+    }
+    if (msg.action === 'setSearchSort') {
+      return { ok: true, active: false };
+    }
+    if (msg.action === 'executeActionRecipe') {
+      return { ok: false, error: 'SELECTOR_NOT_FOUND' };
+    }
+    if (msg.action === 'getInteractiveRegionHtml') {
+      return { ok: true, html: '<div class="broken"></div>' };
+    }
+    return origSend(id, msg);
+  };
+
+  const llm = makeLlm();
+  llm.planGoalRemediation = async () => ({
+    action: 'CLICK',
+    selector: ['.non-existent'],
+    reason: '尝试点击失效选择器',
+  });
+
+  const { scraper, storage } = makeScraper({ tabs, llm });
+  const task = baseTask('task_strict_gate_fail', {
+    config: { notesLimit: 5, sortType: 'time_descending', forceAiRemediation: true },
+  });
+  await storage.saveTask(task);
+
+  await scraper.run(task);
+
+  const updatedTask = await storage.getTask('task_strict_gate_fail');
+  assert.equal(updatedTask.status, 'failed', '目标未达成时任务必须置为 failed');
+  assert.equal(updatedTask.progress.notesCollected, 0, '未达成目标排序前决不允许抓取笔记');
+  assert.equal(updatedTask.progress.noteUrls.length, 0, '未达成目标排序前决不允许抓取笔记列表');
+  assert.ok(updatedTask.progress.remediationState.finished, '自愈状态应当为 finished');
+  assert.equal(updatedTask.progress.remediationState.achieved, false, '自愈状态应当为 achieved: false');
+});
+
 
 
 

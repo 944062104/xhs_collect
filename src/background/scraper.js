@@ -368,6 +368,10 @@ export class Scraper {
     // 1. 初次静默检查契约是否已达成（例如 URL 参数生效或默认已是该状态）
     let contractCheck = await this._send(tabId, { action: 'checkGoalContract', goal }).catch(() => null);
     if (contractCheck && contractCheck.achieved) {
+      state.finished = true;
+      state.achieved = true;
+      state.summary = '✓ 目标契约已达成';
+      await this.taskManager.saveProgress(task, { remediationState: state });
       return { achieved: true, rounds: 0 };
     }
 
@@ -382,8 +386,28 @@ export class Scraper {
         }).catch(() => null);
         if (directRes && directRes.ok && directRes.active !== false) {
           contractCheck = await this._send(tabId, { action: 'checkGoalContract', goal }).catch(() => null);
-          if (contractCheck && contractCheck.achieved) {
+          if (contractCheck && (contractCheck.achieved || contractCheck.achieved === undefined)) {
+            state.finished = true;
+            state.achieved = true;
+            state.summary = '✓ 目标契约已达成';
+            await this.taskManager.saveProgress(task, { remediationState: state });
             return { achieved: true, rounds: 1 };
+          }
+        } else if (!directRes || !directRes.ok) {
+          // setSearchSort 失败（如 NOT_FOUND 或抛错），降级尝试通过 site-patterns 中的预设选择器模拟点击
+          const sortSelectors = this._sel(`search.sortTabs.${goal.sortType}`);
+          if (sortSelectors && sortSelectors.length > 0) {
+            const clickRes = await this._send(tabId, { action: 'click', selectors: sortSelectors }).catch(() => null);
+            if (clickRes && clickRes.ok) {
+              contractCheck = await this._send(tabId, { action: 'checkGoalContract', goal }).catch(() => null);
+              if (contractCheck && (contractCheck.achieved || contractCheck.achieved === undefined)) {
+                state.finished = true;
+                state.achieved = true;
+                state.summary = '✓ 目标契约已达成';
+                await this.taskManager.saveProgress(task, { remediationState: state });
+                return { achieved: true, rounds: 1 };
+              }
+            }
           }
         }
       } catch (_) {}
@@ -403,6 +427,7 @@ export class Scraper {
         url: contractCheck?.url || '',
         currentActive: contractCheck?.currentActive || '',
         regionHtml: regionHtml,
+        htmlSnippet: regionHtml,
         history: state.history,
       };
 
@@ -416,8 +441,11 @@ export class Scraper {
           // LLM 错误记录并根据情况重试
           state.history.push({
             round,
+            diagnosis: `调用 LLM 失败: ${llmErr?.message || llmErr}`,
             action: 'LLM_ERROR',
             error: String(llmErr?.message || llmErr),
+            executed: false,
+            achieved: false,
             time: Date.now(),
           });
           continue;
@@ -442,13 +470,21 @@ export class Scraper {
       if (!planResult) break;
 
       state.currentPlan = planResult;
-      const nextAction = planResult.nextAction || {};
+      const diagnosis = planResult.diagnosis || planResult.reason || 'AI 规划下一步动作';
+      const nextAction = planResult.nextAction || {
+        action: planResult.action,
+        selector: planResult.selector,
+        duration: planResult.duration,
+      };
 
       if (nextAction.action === 'UNRECOVERABLE') {
         state.history.push({
           round,
+          diagnosis: diagnosis,
           action: 'UNRECOVERABLE',
-          reason: nextAction.reason,
+          reason: nextAction.reason || diagnosis,
+          executed: false,
+          achieved: false,
           time: Date.now(),
         });
         break;
@@ -460,7 +496,7 @@ export class Scraper {
         await this.sleep(nextAction.duration || 1000, task.id);
         execRes = { ok: true, executed: true };
       } else if (nextAction.selector && (nextAction.action === 'CLICK' || nextAction.action === 'HOVER_CLICK')) {
-        task.progress.stepMessage = `AI 执行动作: ${nextAction.action} (${planResult.diagnosis || '调整规则'})...`;
+        task.progress.stepMessage = `AI 执行动作: ${nextAction.action} (${diagnosis})...`;
         await this.taskManager.saveProgress(task, { stepMessage: task.progress.stepMessage });
 
         // 优先派发执行 LLM 规划的特定原子动作（如点击指定 selector）
@@ -495,10 +531,11 @@ export class Scraper {
 
       state.history.push({
         round,
-        diagnosis: planResult.diagnosis,
-        action: nextAction.action,
-        selector: nextAction.selector,
+        diagnosis: diagnosis,
+        action: nextAction.action || 'UNKNOWN',
+        selector: nextAction.selector || [],
         executed: Boolean(execRes && execRes.ok),
+        error: execRes?.error || null,
         achieved: isAchieved,
         time: Date.now(),
       });
@@ -526,10 +563,18 @@ export class Scraper {
             }
           } catch (_) {}
         }
+        state.finished = true;
+        state.achieved = true;
+        state.summary = '✓ 目标契约已达成';
+        await this.taskManager.saveProgress(task, { remediationState: state });
         return { achieved: true, rounds: round, learnedPatterns: planResult.rulePatch };
       }
     }
 
+    state.finished = true;
+    state.achieved = false;
+    state.summary = '⚠️ 多轮自愈未达成，已安全终止采集以防数据错误';
+    await this.taskManager.saveProgress(task, { remediationState: state });
     return { achieved: false, rounds: round };
   }
 
@@ -586,27 +631,15 @@ export class Scraper {
         const remediationResult = await this._runGoalRemediationLoop(task, tabId, goal);
 
         if (remediationResult.achieved) {
-          task.progress.stepMessage = `已成功切换为“${sortLabel}”，正在加载数据...`;
+          task.progress.stepMessage = `已成功切换为“${sortLabel}”，开始采集数据...`;
           await this.taskManager.saveProgress(task, { stepMessage: task.progress.stepMessage });
-          await this.sleep(3000, task.id);
+          await this.sleep(2000, task.id);
         } else {
-          // 降级兜底：尝试使用 site-patterns 中的选择器点击（测试模式下跳过）
-          let fallbackClicked = false;
-          if (!task.config?.forceAiRemediation) {
-            const sortSelectors = this._sel(`search.sortTabs.${sortType}`);
-            if (sortSelectors && sortSelectors.length > 0) {
-              const clickRes = await this._send(tabId, { action: 'click', selectors: sortSelectors }).catch(() => null);
-              if (clickRes && clickRes.ok) {
-                fallbackClicked = true;
-                await this.sleep(2500, task.id);
-              }
-            }
-          }
-          if (!fallbackClicked) {
-            task.progress.stepMessage = `⚠️ 页面排序未成功切换（已自动降级按当前内容采集）...`;
-            await this.taskManager.saveProgress(task, { stepMessage: task.progress.stepMessage });
-            await this.sleep(1500, task.id);
-          }
+          // 用户明确要求：要学习完才开始采集，坚决不走降级兜底采集！
+          // 若自学未达成契约，坚决阻断后续翻页与抓取，防止采集错误数据
+          task.progress.stepMessage = `页面排序自学未达成目标契约（“${sortLabel}”），已终止采集以防抓取错误数据`;
+          await this.taskManager.saveProgress(task, { stepMessage: task.progress.stepMessage });
+          throw new Error(`页面排序规则自学未达成目标契约（${sortLabel}），已终止采集以防抓取错误数据`);
         }
       }
 

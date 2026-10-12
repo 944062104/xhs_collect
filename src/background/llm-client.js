@@ -538,7 +538,8 @@ export class LLMClient {
 失败原因: ${evidence?.lastError || '未达成预期目标状态'}
 历史尝试记录数: ${(evidence?.history || []).length}`;
 
-    const cleaned = cleanHtml(evidence?.htmlSnippet || '');
+    const rawHtml = evidence?.regionHtml || evidence?.htmlSnippet || '';
+    const cleaned = cleanHtml(rawHtml);
     const prompt = `${goalDesc}\n${evidenceDesc}\n\n以下是当前页面控制区域 HTML 片段：\n"""\n${cleaned}\n"""\n请规划下一步最优动作。`;
 
     const data = await this._extract(SYSTEM_GOAL_PLANNER, prompt);
@@ -555,6 +556,8 @@ export class LLMClient {
       action,
       selector,
       reason,
+      diagnosis: reason,
+      nextAction: { action, selector },
       raw: data,
     };
   }

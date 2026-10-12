@@ -597,5 +597,37 @@ test('LLMClient.planGoalRemediation：当 LLM 返回扁平或单字符串 select
   }
 });
 
+test('LLMClient.planGoalRemediation：兼容 regionHtml 入参并产出规范化 diagnosis 与 nextAction', async () => {
+  let capturedBody = '';
+  installFetch((url, opts) => {
+    capturedBody = opts?.body || '';
+    return jsonResponse({
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            action: 'CLICK',
+            selector: ['.btn-latest'],
+            reason: '点击最新排序按钮',
+          }),
+        },
+      ],
+    });
+  });
+
+  try {
+    const client = new LLMClient('sk-test');
+    const plan = await client.planGoalRemediation(
+      { type: 'search_sort', targetValue: 'time_descending', targetLabel: '最新' },
+      { regionHtml: '<div class="sort-bar"><button class="btn-latest">最新</button></div>' }
+    );
+    assert.ok(capturedBody.includes('btn-latest'), 'Prompt 中应当包含 regionHtml 中的元素');
+    assert.equal(plan.diagnosis, '点击最新排序按钮', '应当提供 diagnosis 字段');
+    assert.deepEqual(plan.nextAction, { action: 'CLICK', selector: ['.btn-latest'] }, '应当提供标准 nextAction 结构');
+  } finally {
+    restoreFetch();
+  }
+});
+
 
 
