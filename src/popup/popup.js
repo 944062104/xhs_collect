@@ -471,7 +471,7 @@ function initPopup() {
       if (cfg.protocol && els.protocol) els.protocol.value = cfg.protocol;
       if (cfg.sortType && els.sortType) els.sortType.value = cfg.sortType;
       if (els.forceAiRemediation) {
-        els.forceAiRemediation.checked = cfg.forceAiRemediation !== undefined ? Boolean(cfg.forceAiRemediation) : true;
+        els.forceAiRemediation.checked = Boolean(cfg.forceAiRemediation);
       }
       
       let depth = 20;
