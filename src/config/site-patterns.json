@@ -50,7 +50,36 @@
             "body"
           ],
           "noteCard": [".note-item", "section.note-card", "div[data-note-id]", "section[class*='note-card']"],
-          "noteLink": [".note-item a.cover", "a[href*='/explore/']", "a[href*='/search_result/']"]
+          "noteLink": [".note-item a.cover", "a[href*='/explore/']", "a[href*='/search_result/']"],
+          "filterButton": [
+            ".filter",
+            ".filter span",
+            "//*[contains(normalize-space(.), '已筛选')]",
+            "//*[contains(normalize-space(.), '筛选')]",
+            "div[class*='filter']",
+            ".filter-icon",
+            "button:has(span:contains('筛选'))"
+          ],
+          "sortTabs": {
+            "popularity_descending": [
+              "//*[normalize-space(.)='最多点赞']",
+              "//*[contains(normalize-space(.), '最多点赞')]",
+              "//*[contains(normalize-space(.), '最热')]",
+              "最多点赞",
+              "最热",
+              ".filter-box div[class*='sort']",
+              "div[class*='sort']"
+            ],
+            "time_descending": [
+              "//*[normalize-space(.)='最新']",
+              "//*[contains(normalize-space(.), '最新')]",
+              "//*[contains(normalize-space(.), '最新发布')]",
+              "最新",
+              "最新发布",
+              ".filter-box div[class*='sort']",
+              "div[class*='sort']"
+            ]
+          }
         },
         "noteDetail": {
           "container": [

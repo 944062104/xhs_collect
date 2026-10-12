@@ -180,6 +180,43 @@ const SYSTEM_PATTERN_LEARNER = `你是一个专业的 Web 自动化爬虫专家�
 }
 要求：每个字段的值必须是非空字符串数组。不要输出代码围栏或任何多余解释文字，只输出纯 JSON。`;
 
+const SYSTEM_SEARCH_SORT_LEARNER = `你是一个小红书搜索页面 DOM 结构专家。
+你的任务是分析搜索结果页顶部的交互控制区域 HTML 片段，进行【区域判断】并提取精确的选择器：
+1. 【区域判断】：小红书搜索页顶部通常包含左侧“内容类型分类栏”（如 全部、图文、视频、用户）和右侧“筛选与排序控制区”（如 筛选按钮、排序弹层/胶囊）。必须精准定位“筛选与排序控制区”所在容器，严禁选中左侧分类栏！
+2. 【展开按钮】：识别展开筛选面板的按钮（通常包含“筛选”或具有 filter 类名）。
+3. 【排序选项】：识别用户指定的 targetSortType 对应的选项胶囊（如“最新”、“最多点赞”等）。
+
+输出格式必须是严格纯 JSON，格式如下：
+{
+  "regionSelector": [".filter", "div[class*='filter']"],
+  "filterButton": [".filter span", "button.filter-btn", "//span[text()='筛选']"],
+  "sortOption": ["//span[text()='最新']", ".sort-capsule", "//div[text()='最新']"],
+  "reason": "简述区域定位依据与识别特征"
+}
+要求：
+- regionSelector、filterButton、sortOption 的值必须是非空字符串数组。
+- 绝不要把“全部/图文/视频/用户”分类导航当成排序控制区。
+- 不要输出代码围栏或多余散文，仅输出纯 JSON。`;
+
+const SYSTEM_GOAL_PLANNER = `你是一个智能 Web 自动化调度大脑。
+当前 Agent 正在执行一个明确的目标契约（Goal Contract）。
+你需要根据【目标契约】、现场【HTML 片段】、以及【历史尝试与失败原因】，为执行器规划下一个最有可能达成目标的原子动作。
+
+可选动作类型 (action)：
+1. "CLICK"：直接点击目标元素或胶囊
+2. "HOVER_CLICK"：先悬停（触发下拉/展开）再点击
+3. "URL_PARAM"：改用 URL 查询参数直达
+4. "WAIT"：等待页面异步渲染或数据加载
+5. "UNRECOVERABLE"：出现无法逾越的阻碍（如登录拦截/滑块验证码）
+
+只输出纯 JSON 格式：
+{
+  "action": "CLICK",
+  "selector": ["CSS选择器1", "XPath选择器2"],
+  "reason": "简述规划动作的推理与依据"
+}
+严禁输出代码围栏或多余散文，只输出可解析的纯 JSON。`;
+
 const STRICT_RETRY_NOTE = '\n\n【重试】严格要求：仅输出纯 JSON，禁止使用代码围栏、不要添加任何解释文字。';
 
 // ----------------------------------------------------------------------------
@@ -464,6 +501,62 @@ export class LLMClient {
       throw new Error('learnSitePatterns 预期返回对象');
     }
     return data;
+  }
+
+  // 搜索排序专属区域判断与自愈学习（区分左侧分类栏与右侧筛选控制区，支持历史失败反馈迭代）
+  async learnSearchSortRegion(htmlSnippet, targetSortType = 'time_descending', feedbackContext = '') {
+    const cleaned = cleanHtml(htmlSnippet);
+    const sortLabelMap = {
+      time_descending: '最新/最新发布',
+      popularity_descending: '最多点赞/最热',
+      comments_descending: '最多评论',
+      general: '综合',
+    };
+    const targetLabel = sortLabelMap[targetSortType] || targetSortType;
+    let instruction = `请对以下 HTML 进行区域判断，定位出针对“${targetLabel}”（${targetSortType}）排序的筛选控制区域、展开按钮及目标排序胶囊选择器。`;
+    if (feedbackContext) {
+      instruction += `\n\n【上一轮执行失败反馈】：\n${feedbackContext}\n请针对失败原因重新定位更稳健的区域与选择器，不要重复输出已失效规则！`;
+    }
+    const prompt = this._buildPrompt(instruction, cleaned);
+    const data = await this._extract(SYSTEM_SEARCH_SORT_LEARNER, prompt);
+    if (!data || typeof data !== 'object') {
+      throw new Error('learnSearchSortRegion 预期返回对象');
+    }
+    return {
+      regionSelector: Array.isArray(data.regionSelector) ? data.regionSelector : [],
+      filterButton: Array.isArray(data.filterButton) ? data.filterButton : [],
+      sortOption: Array.isArray(data.sortOption) ? data.sortOption : [],
+      reason: data.reason || '',
+    };
+  }
+
+  // 借鉴 web-access 目标驱动自愈哲学：基于目标契约与现场证据规划下一步原子动作
+  async planGoalRemediation(goal, evidence) {
+    const goalDesc = `【目标契约】类型: ${goal?.type || 'unknown'}, 期望值: ${goal?.targetValue || ''}, 标签: ${goal?.targetLabel || ''}`;
+    const evidenceDesc = `【现场证据】
+上一次动作: ${JSON.stringify(evidence?.lastAction || {})}
+失败原因: ${evidence?.lastError || '未达成预期目标状态'}
+历史尝试记录数: ${(evidence?.history || []).length}`;
+
+    const cleaned = cleanHtml(evidence?.htmlSnippet || '');
+    const prompt = `${goalDesc}\n${evidenceDesc}\n\n以下是当前页面控制区域 HTML 片段：\n"""\n${cleaned}\n"""\n请规划下一步最优动作。`;
+
+    const data = await this._extract(SYSTEM_GOAL_PLANNER, prompt);
+    if (!data || typeof data !== 'object') {
+      throw new Error('planGoalRemediation 预期返回对象');
+    }
+
+    const action = String(data.action || 'CLICK').toUpperCase();
+    const rawSelectors = Array.isArray(data.selector) ? data.selector : (data.selector ? [data.selector] : []);
+    const selector = rawSelectors.filter(Boolean);
+    const reason = String(data.reason || '自动规划下一步动作');
+
+    return {
+      action,
+      selector,
+      reason,
+      raw: data,
+    };
   }
 
   // 测试连接：发送轻量请求验证 API Key / URL / 模型可用性

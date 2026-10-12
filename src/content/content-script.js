@@ -16,9 +16,11 @@ var XPATH_FIRST_NODE = 9;
 // 与 XPathResult.ORDERED_NODE_SNAPSHOT_TYPE 等价，用于取文本包含命中的多个节点。
 var XPATH_SNAPSHOT = 7;
 
-// 安全计时器（避免在未注入 setInterval 的 Node 沙箱或特殊环境抛错）
+// 安全计时器（避免在未注入 setInterval/setTimeout 的 Node 沙箱或特殊环境抛错）
 var safeSetInterval = typeof setInterval === 'function' ? setInterval : function (fn, ms) { return setTimeout(fn, ms); };
 var safeClearInterval = typeof clearInterval === 'function' ? clearInterval : clearTimeout;
+var safeSetTimeout = typeof setTimeout === 'function' ? setTimeout : function (fn, ms) { return setTimeout(fn, ms); };
+var safeClearTimeout = typeof clearTimeout === 'function' ? clearTimeout : function () {};
 
 // ----------------------------------------------------------------------------
 // 多级备选选择器探测：CSS → XPath → 文本包含
@@ -242,20 +244,17 @@ function isCategoryTabOrNav(el) {
   var t = (el.textContent || '').trim();
   if (/^(全部|图文|视频|用户)$/.test(t)) return true;
   var c = (el.className || '').toString();
-  if (/channel|tab-list|nav-tabs/.test(c)) return true;
-  if (typeof el.querySelector === 'function') {
-    var sub = el.querySelector('.tab-item, [class*="channel"], [class*="tab"]');
-    if (sub) return true;
-  }
-  // 若子项文本包含明显的多分类词汇且不含“筛选”
-  if (t.indexOf('图文') !== -1 && t.indexOf('视频') !== -1 && t.indexOf('筛选') === -1) {
+  if (/channel-filter|tab-list|nav-tabs/.test(c)) return true;
+  // 若包含图文和视频，且不含筛选/排序
+  if (t.indexOf('图文') !== -1 && t.indexOf('视频') !== -1 && t.indexOf('筛选') === -1 && t.indexOf('排序') === -1 && t.indexOf('最新') === -1) {
     return true;
   }
   return false;
 }
 
-// 查找浮层容器（通过“排序依据”精准定位，彻底杜绝误触页面左侧分类和其它元素）
+// 查找浮层容器（支持“排序依据”小标题，或展开后包含“最新”/“最多点赞”的胶囊容器）
 function findSortPopup() {
+  // 1. 尝试从包含“排序依据”的结构查找最小公共容器
   var nodes = document.querySelectorAll('div, span, p, label, section, h3, h4');
   for (var i = 0; i < nodes.length; i++) {
     var node = nodes[i];
@@ -264,15 +263,8 @@ function findSortPopup() {
     if (txt === '排序依据' || txt.indexOf('排序依据') === 0) {
       var parent = node.parentElement;
       while (parent && parent !== document.body) {
-        if (typeof parent.querySelectorAll === 'function') {
-          var children = parent.querySelectorAll('div, span, button');
-          if (children.length >= 3) {
-            var rect = typeof parent.getBoundingClientRect === 'function' ? parent.getBoundingClientRect() : null;
-            if (!rect || rect.width < 600) {
-              return parent;
-            }
-          }
-        } else if (parent.children && parent.children.length >= 2) {
+        var pTxt = parent.textContent || '';
+        if (pTxt.includes('最新') || pTxt.includes('最多点赞') || pTxt.includes('综合')) {
           return parent;
         }
         parent = parent.parentElement;
@@ -280,46 +272,142 @@ function findSortPopup() {
       return node.parentElement || node;
     }
   }
-  // 兼容测试与特殊 DOM：若无严格 "排序依据" 标签，尝试从 class 带 sort/filter-panel/filter-dropdown 的弹窗中找
-  var pop = document.querySelector('[class*="filter-panel"], [class*="filter-dropdown"], [class*="sort-dropdown"]');
+
+  // 2. 真实 XHS 结构：从包含“最新”或“最多点赞”的非导航栏容器反向查找浮层面板
+  var optionSpans = document.querySelectorAll('span, div, button');
+  for (var j = 0; j < optionSpans.length; j++) {
+    var op = optionSpans[j];
+    if (!isElementVisible(op) || isCategoryTabOrNav(op)) continue;
+    var ot = (op.textContent || '').trim();
+    if (ot === '最新' || ot === '最多点赞' || ot === '最新发布') {
+      var p = op.parentElement;
+      while (p && p !== document.body) {
+        if (isCategoryTabOrNav(p)) break;
+        var pClass = String(p.className || '');
+        if (/filter|sort|panel|dropdown|popover|box|menu|wrapper|container/.test(pClass) || (p.textContent && p.textContent.indexOf('综合') !== -1 && p.textContent.indexOf('最新') !== -1)) {
+          return p;
+        }
+        p = p.parentElement;
+      }
+      return op.parentElement;
+    }
+  }
+
+  // 3. 兼容测试与显式 class
+  var pop = document.querySelector('[class*="filter-panel"], [class*="filter-dropdown"], [class*="sort-dropdown"], [class*="filter-box"]');
   if (pop && isElementVisible(pop) && !isCategoryTabOrNav(pop)) return pop;
   return null;
 }
 
 // 查找右上角的“筛选”或“已筛选”展开按钮
 function findFilterToggleBtn() {
-  // 优先通过显式 class（排除分类容器）
-  var byClass = document.querySelector('[class*="filter-btn"], [class*="filterBtn"], [class*="filter-trigger"]');
-  if (byClass && isElementVisible(byClass) && !isCategoryTabOrNav(byClass)) return byClass;
-
+  // 1. 优先寻找文本精确为“筛选”或“已筛选”的可见节点（如 <span>筛选</span> 或 <button>筛选</button>）
   var all = document.querySelectorAll('button, div, span, a');
-  var best = null;
-  var maxRight = 0;
+  var candidates = [];
   for (var i = 0; i < all.length; i++) {
     var el = all[i];
     if (!isElementVisible(el)) continue;
     if (isCategoryTabOrNav(el)) continue;
     var txt = (el.textContent || '').trim();
-    if ((txt === '筛选' || txt === '已筛选' || (txt.indexOf('筛选') !== -1 && txt.length <= 4))) {
-      if (typeof el.getBoundingClientRect === 'function') {
-        var rect = el.getBoundingClientRect();
-        if (rect.top >= 0 && rect.top <= 250) {
-          if (rect.right > maxRight) {
-            maxRight = rect.right;
-            best = el;
-          }
-        }
-      } else {
-        best = el;
-      }
+    if (txt === '筛选' || txt === '已筛选' || (/^已?筛选/.test(txt) && txt.length <= 4)) {
+      candidates.push(el);
     }
   }
-  if (best) return best;
 
-  // 文本匹配兜底
+  if (candidates.length > 0) {
+    // 优先返回自身或父级 className 包含 filter 的节点（若父级为 filter 容器，优先返回父级交互容器）
+    for (var j = 0; j < candidates.length; j++) {
+      var c = candidates[j];
+      var p = c.parentElement;
+      if (p && String(p.className || '').indexOf('filter') !== -1) return p;
+      if (String(c.className || '').indexOf('filter') !== -1) return c;
+    }
+    // 否则取顶部最靠右侧的元素
+    var best = candidates[0];
+    var maxRight = 0;
+    for (var k = 0; k < candidates.length; k++) {
+      if (typeof candidates[k].getBoundingClientRect === 'function') {
+        var r = candidates[k].getBoundingClientRect();
+        if (r.right > maxRight) {
+          maxRight = r.right;
+          best = candidates[k];
+        }
+      }
+    }
+    return best;
+  }
+
+  // 2. 备选：查找明确包含 filter 类的可交互按钮容器
+  var byClass = document.querySelector('.filter, [class*="filter-btn"], [class*="filterBtn"], [class*="filter-trigger"]');
+  if (byClass && isElementVisible(byClass) && !isCategoryTabOrNav(byClass)) {
+    return byClass;
+  }
+
+  // 3. 文本匹配兜底
   var byText = findFirstElement(["//*[normalize-space(.)='筛选']", "//*[normalize-space(.)='已筛选']", "筛选"], true);
   if (byText && !isCategoryTabOrNav(byText)) return byText;
   return null;
+}
+
+// 提取顶部交互控制区域骨架 HTML（导航分类栏 + 筛选控制区域 + 排序浮层），供 LLM 进行区域判断
+function extractInteractiveRegionHtml() {
+  try {
+    var parts = [];
+    // 1. 抓取顶部导航栏/分类栏容器（让 LLM 看到并能够识别以排除左侧分类栏）
+    var navTabs = document.querySelector('[class*="channel"], [class*="tab-list"], [class*="nav-tabs"], ul[role="tablist"]');
+    if (navTabs) {
+      parts.push('<div class="skeleton-nav-region">' + (navTabs.outerHTML || '') + '</div>');
+    }
+
+    // 2. 抓取筛选按钮及所在的父级容器（操作栏）
+    var filterBtn = typeof findFilterToggleBtn === 'function' ? findFilterToggleBtn() : null;
+    if (filterBtn) {
+      var p = filterBtn;
+      for (var k = 0; k < 3 && p.parentElement && p.parentElement !== document.body; k++) {
+        p = p.parentElement;
+      }
+      parts.push('<div class="skeleton-filter-region">' + (p.outerHTML || filterBtn.outerHTML) + '</div>');
+    }
+
+    // 3. 抓取排序浮层（若已挂载）
+    var popup = typeof findSortPopup === 'function' ? findSortPopup() : null;
+    if (popup) {
+      parts.push('<div class="skeleton-sort-popup">' + (popup.outerHTML || '') + '</div>');
+    }
+
+    // 4. 若未找到特定节点，兜底截取视口顶部 400px 内的非正文容器
+    if (parts.length === 0) {
+      var topNodes = document.querySelectorAll('header, [class*="filter"], [class*="sort"], [class*="search-header"]');
+      for (var i = 0; i < topNodes.length && parts.length < 3; i++) {
+        parts.push(topNodes[i].outerHTML || '');
+      }
+    }
+
+    return '<div class="xhs-interactive-control-skeleton">\n' + parts.join('\n') + '\n</div>';
+  } catch (_) {
+    return '';
+  }
+}
+
+function handleGetInteractiveRegionHtml(msg, sendResponse) {
+  function finish() {
+    var html = extractInteractiveRegionHtml();
+    sendResponse({ ok: true, html: html || '<div class="fallback-empty"></div>' });
+  }
+
+  // 若浮层未展开，先主动点击筛选按钮展开浮层，等待挂载后再抓取 HTML 供 LLM 分析
+  var popup = typeof findSortPopup === 'function' ? findSortPopup() : null;
+  if (!popup && typeof findFilterToggleBtn === 'function') {
+    var filterBtn = findFilterToggleBtn();
+    if (filterBtn) {
+      triggerMouseClick(filterBtn);
+      safeSetTimeout(finish, 250);
+      return true; // 保持通道开放
+    }
+  }
+
+  finish();
+  return false;
 }
 
 // 提取搜索页紧凑核心骨架（顶部操作栏/筛选浮层 + 前几个笔记卡片），防止整页数十万字 HTML 被暴力切断
@@ -850,34 +938,124 @@ function handleGetComments(msg, sendResponse) {
   return false;
 }
 
-// 触发完整拟人鼠标点击（mousedown -> mouseup -> click），确保 React 受控组件接收到事件
+// 触发完整拟人鼠标点击（hover -> pointerdown -> mousedown -> pointerup -> mouseup -> click），确保 React 受控组件接收到事件
 function triggerMouseClick(el) {
   if (!el) return;
-  try {
-    if (typeof window !== 'undefined' && typeof window.MouseEvent === 'function') {
-      var down = new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window });
-      var up = new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window });
-      var clk = new MouseEvent('click', { bubbles: true, cancelable: true, view: window });
-      el.dispatchEvent(down);
-      el.dispatchEvent(up);
-      el.dispatchEvent(clk);
-    }
-  } catch (_) {}
-  try {
-    if (typeof el.click === 'function') el.click();
-  } catch (_) {}
-  if (el.parentElement && (el.tagName === 'SPAN' || el.tagName === 'SVG' || el.tagName === 'I')) {
+
+  var targets = [];
+  function addTarget(t) {
+    if (t && targets.indexOf(t) === -1) targets.push(t);
+  }
+  addTarget(el);
+  if (el.parentElement) addTarget(el.parentElement);
+  if (typeof el.closest === 'function') {
+    var cBtn = el.closest('button, [role="button"]');
+    if (cBtn) addTarget(cBtn);
+    var cFilter = el.closest('.filter, [class*="filter"]');
+    if (cFilter) addTarget(cFilter);
+    var cTab = el.closest('[class*="tab"]');
+    if (cTab) addTarget(cTab);
+  }
+
+  var rect = typeof el.getBoundingClientRect === 'function' ? el.getBoundingClientRect() : null;
+  var cx = rect ? (rect.left + rect.width / 2) : 100;
+  var cy = rect ? (rect.top + rect.height / 2) : 100;
+
+  var eventInit = {
+    bubbles: true,
+    cancelable: true,
+    composed: true,
+    view: typeof window !== 'undefined' ? window : null,
+    clientX: cx,
+    clientY: cy,
+    screenX: cx,
+    screenY: cy,
+    pageX: cx,
+    pageY: cy,
+    buttons: 1,
+    button: 0,
+    which: 1,
+  };
+
+  // 1. 悬停展开事件（针对通过 hover/mouseenter 触发的浮层）
+  for (var h = targets.length - 1; h >= 0; h--) {
+    var hNode = targets[h];
     try {
-      if (typeof el.parentElement.click === 'function') el.parentElement.click();
+      if (typeof window !== 'undefined') {
+        if (typeof window.PointerEvent === 'function') {
+          hNode.dispatchEvent(new PointerEvent('pointerover', eventInit));
+          hNode.dispatchEvent(new PointerEvent('pointerenter', eventInit));
+        }
+        if (typeof window.MouseEvent === 'function') {
+          hNode.dispatchEvent(new MouseEvent('mouseover', eventInit));
+          hNode.dispatchEvent(new MouseEvent('mouseenter', eventInit));
+        }
+      }
     } catch (_) {}
   }
+
+  // 2. 按下、释放与点击事件
+  for (var p = 0; p < targets.length; p++) {
+    var pNode = targets[p];
+    try {
+      if (typeof window !== 'undefined') {
+        if (typeof window.PointerEvent === 'function') {
+          pNode.dispatchEvent(new PointerEvent('pointerdown', eventInit));
+          pNode.dispatchEvent(new PointerEvent('pointerup', eventInit));
+        }
+        if (typeof window.MouseEvent === 'function') {
+          pNode.dispatchEvent(new MouseEvent('mousedown', eventInit));
+          pNode.dispatchEvent(new MouseEvent('mouseup', eventInit));
+          pNode.dispatchEvent(new MouseEvent('click', eventInit));
+        }
+      }
+    } catch (_) {}
+    try {
+      if (typeof pNode.click === 'function') pNode.click();
+    } catch (_) {}
+  }
+
+  // 3. 针对 Node.js vm mock 测试沙箱兼容（无原生冒泡环境）
+  if (typeof window === 'undefined' || !window.document || !window.document.documentElement) {
+    if (typeof el.click === 'function') {
+      try { el.click(); } catch (_) {}
+    }
+    if (el.parentElement && typeof el.parentElement.click === 'function') {
+      try { el.parentElement.click(); } catch (_) {}
+    }
+  }
+}
+
+// 判断排序胶囊是否处于 active 激活态
+function isOptionActive(el) {
+  if (!el) return false;
+  var toCheck = [el];
+  if (el.parentElement) toCheck.push(el.parentElement);
+  if (el.parentElement && el.parentElement.parentElement) toCheck.push(el.parentElement.parentElement);
+  if (el.children) {
+    for (var c = 0; c < el.children.length; c++) toCheck.push(el.children[c]);
+  }
+
+  for (var i = 0; i < toCheck.length; i++) {
+    var cur = toCheck[i];
+    var cl = String(cur.className || '');
+    if (/\b(active|selected|current|is-active|checked|highlight)\b/i.test(cl)) {
+      return true;
+    }
+    if (typeof cur.getAttribute === 'function') {
+      if (cur.getAttribute('aria-selected') === 'true' || cur.getAttribute('data-active') === 'true') {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 // setSearchSort：在搜索结果页切换排序（支持综合、最新、最多点赞、最多评论）
 function handleSetSearchSort(msg, sendResponse) {
   var sortType = msg.sortType;
   if (!sortType || sortType === 'general') {
-    sendResponse({ ok: true, message: '默认综合排序' });
+    sendResponse({ ok: true, active: true, message: '默认综合排序' });
     return false;
   }
 
@@ -893,7 +1071,99 @@ function handleSetSearchSort(msg, sendResponse) {
   var timeout = typeof msg.timeout === 'number' ? msg.timeout : 4000;
   var startTime = Date.now();
 
-  // 在排序浮层内查找目标胶囊选项按钮（'最新' / '最多点赞' / '综合' / '最多评论'）
+  // 目标候选别名列表
+  var targetNames = [targetName];
+  if (sortType === 'time_descending') {
+    targetNames = ['最新', '最新发布'];
+  } else if (sortType === 'popularity_descending') {
+    targetNames = ['最多点赞', '最热'];
+  } else if (sortType === 'comments_descending') {
+    targetNames = ['最多评论'];
+  }
+
+  // 响应校验函数：等待 React 异步更新 DOM 并渲染 active 类
+  function verifyAndRespond(clickedEl, extra) {
+    extra = extra || {};
+    var checkStart = Date.now();
+    var checkTimer = safeSetInterval(function () {
+      if (isOptionActive(clickedEl)) {
+        safeClearInterval(checkTimer);
+        sendResponse(Object.assign({ ok: true, switched: true, active: true }, extra));
+        return;
+      }
+
+      // 实时全页面扫描是否有匹配 targetNames 且处于 active 的胶囊
+      var activeCapsule = null;
+      var tabs = document.querySelectorAll('button, div, span');
+      for (var t = 0; t < tabs.length; t++) {
+        var tabNode = tabs[t];
+        if (!isElementVisible(tabNode) || isCategoryTabOrNav(tabNode)) continue;
+        var txt = (tabNode.textContent || '').trim();
+        if (targetNames.indexOf(txt) !== -1 && isOptionActive(tabNode)) {
+          activeCapsule = tabNode;
+          break;
+        }
+      }
+      if (activeCapsule) {
+        safeClearInterval(checkTimer);
+        sendResponse(Object.assign({ ok: true, switched: true, active: true }, extra));
+        return;
+      }
+
+      // 延长检测窗口至 600ms（留足 React 提交状态与 DOM Diff 的时间）
+      if (Date.now() - checkStart >= 600) {
+        safeClearInterval(checkTimer);
+        sendResponse(Object.assign({ ok: true, switched: true, active: false }, extra));
+      }
+    }, 40);
+  }
+
+  // 步骤 0：若指定了限定区域 (regionSelector)
+  var scopedContainer = null;
+  if (Array.isArray(msg.regionSelector) && msg.regionSelector.length > 0) {
+    for (var rs = 0; rs < msg.regionSelector.length; rs++) {
+      try {
+        var foundReg = document.querySelector(msg.regionSelector[rs]);
+        if (foundReg && !isCategoryTabOrNav(foundReg)) {
+          scopedContainer = foundReg;
+          break;
+        }
+      } catch (_) {}
+    }
+  }
+
+  if (scopedContainer) {
+    // 优先在限定区域内直接查找并点击
+    var targetInRegion = null;
+    if (Array.isArray(msg.sortOption) && msg.sortOption.length > 0) {
+      for (var so = 0; so < msg.sortOption.length; so++) {
+        try {
+          var matchedList = scopedContainer.querySelectorAll(msg.sortOption[so]);
+          if (matchedList && matchedList.length > 0) {
+            targetInRegion = matchedList[0];
+            break;
+          }
+        } catch (_) {}
+      }
+    }
+    if (!targetInRegion && typeof scopedContainer.querySelectorAll === 'function') {
+      var inRegNodes = scopedContainer.querySelectorAll('button, div, span, a');
+      for (var ir = 0; ir < inRegNodes.length; ir++) {
+        var irt = (inRegNodes[ir].textContent || '').trim();
+        if (targetNames.indexOf(irt) !== -1) {
+          targetInRegion = inRegNodes[ir];
+          break;
+        }
+      }
+    }
+    if (targetInRegion) {
+      triggerMouseClick(targetInRegion);
+      verifyAndRespond(targetInRegion, { scoped: true });
+      return true;
+    }
+  }
+
+  // 在浮层内查找目标胶囊
   function findOptionInPopup(popup) {
     if (!popup) return null;
     var candidates = [];
@@ -902,12 +1172,23 @@ function handleSetSearchSort(msg, sendResponse) {
     } else if (popup.children) {
       candidates = popup.children;
     }
+    // 优先匹配胶囊按钮（button 或含 tab/capsule/btn 的元素）
     for (var i = 0; i < candidates.length; i++) {
       var el = candidates[i];
-      if (!isElementVisible(el)) continue;
+      if (!isElementVisible(el) || isCategoryTabOrNav(el)) continue;
       var t = (el.textContent || '').trim();
-      if (t === targetName || (targetName === '最新' && (t === '最新' || t === '最新发布'))) {
-        return el;
+      if (targetNames.indexOf(t) !== -1) {
+        var isPill = el.tagName === 'BUTTON' || /\b(tab|btn|capsule|pill|tag|item)\b/i.test(el.className || '');
+        if (isPill) return el;
+      }
+    }
+    // 兜底匹配普通子节点
+    for (var j = 0; j < candidates.length; j++) {
+      var el2 = candidates[j];
+      if (!isElementVisible(el2) || isCategoryTabOrNav(el2)) continue;
+      var t2 = (el2.textContent || '').trim();
+      if (targetNames.indexOf(t2) !== -1) {
+        return el2;
       }
     }
     return null;
@@ -919,43 +1200,76 @@ function handleSetSearchSort(msg, sendResponse) {
       var opt = findOptionInPopup(popup);
       if (opt) {
         triggerMouseClick(opt);
-        return true;
+        return opt;
       }
     }
-    // 若要求仅在浮层内匹配，未在浮层找到直接返回 false
+    // 若要求仅在浮层内匹配，未在浮层找到直接返回 null
     if (inPopupOnly) {
-      return false;
+      return null;
     }
 
-    // 步骤 2 之后展开浮层的兼容逻辑：
-    // 1) 优先尝试 XPath 严格全等匹配
-    var exactXpath = "//*[normalize-space(.)=" + JSON.stringify(targetName) + "]";
-    var exactNode = findFirstElement([exactXpath], true);
-    if (exactNode) {
-      var exactTxt = (exactNode.textContent || '').trim();
-      if (exactTxt === targetName || (targetName === '最新' && exactTxt === '最新发布')) {
-        triggerMouseClick(exactNode);
-        return true;
+    // 步骤 2 展开浮层后的精准匹配（遍历页面所有可见非导航元素，精确匹配目标名称）
+    var all = document.querySelectorAll('button, div, span');
+    // 优先匹配顶部 450px 内的胶囊按钮
+    for (var i = 0; i < all.length; i++) {
+      var cur = all[i];
+      if (!isElementVisible(cur) || isCategoryTabOrNav(cur)) continue;
+      var text = (cur.textContent || '').trim();
+      if (targetNames.indexOf(text) !== -1) {
+        var r = typeof cur.getBoundingClientRect === 'function' ? cur.getBoundingClientRect() : null;
+        if (!r || (r.top >= 0 && r.top <= 450 && r.left >= 100)) {
+          var isPill = cur.tagName === 'BUTTON' || /\b(tab|btn|capsule|pill|tag|item)\b/i.test(cur.className || '');
+          if (isPill) {
+            triggerMouseClick(cur);
+            return cur;
+          }
+        }
+      }
+    }
+    // 兜底匹配任意符合文本的可见元素
+    for (var j = 0; j < all.length; j++) {
+      var cur2 = all[j];
+      if (!isElementVisible(cur2) || isCategoryTabOrNav(cur2)) continue;
+      var text2 = (cur2.textContent || '').trim();
+      if (targetNames.indexOf(text2) !== -1) {
+        var r2 = typeof cur2.getBoundingClientRect === 'function' ? cur2.getBoundingClientRect() : null;
+        if (!r2 || (r2.top >= 0 && r2.top <= 450 && r2.left >= 100)) {
+          triggerMouseClick(cur2);
+          return cur2;
+        }
       }
     }
 
-    // 2) 文本匹配（严格校验自身文本必须全等于目标词，杜绝命中包含词汇的长文或普通笔记）
-    var textNode = findFirstElement([targetName], true);
-    if (textNode) {
-      var t = (textNode.textContent || '').trim();
-      if (t === targetName || (targetName === '最新' && t === '最新发布')) {
-        triggerMouseClick(textNode);
-        return true;
+    // 兼容 XPath / 文本匹配兜底（在 Node 沙箱或轻量 DOM 中命中）
+    for (var k = 0; k < targetNames.length; k++) {
+      var name = targetNames[k];
+      var exactXpath = "//*[normalize-space(.)=" + JSON.stringify(name) + "]";
+      var exactNode = findFirstElement([exactXpath], true);
+      if (exactNode && !isCategoryTabOrNav(exactNode)) {
+        var exactTxt = (exactNode.textContent || '').trim();
+        if (targetNames.indexOf(exactTxt) !== -1) {
+          triggerMouseClick(exactNode);
+          return exactNode;
+        }
+      }
+      var textNode = findFirstElement([name], true);
+      if (textNode && !isCategoryTabOrNav(textNode)) {
+        var txt = (textNode.textContent || '').trim();
+        if (targetNames.indexOf(txt) !== -1) {
+          triggerMouseClick(textNode);
+          return textNode;
+        }
       }
     }
 
-    return false;
+    return null;
   }
 
   // 步骤 1：若浮层已展开，直接在浮层中点击（严格禁止在浮层未展开时匹配全局文字）
-  if (tryClickTarget(true)) {
-    sendResponse({ ok: true, switched: true, direct: true });
-    return false;
+  var directClicked = tryClickTarget(true);
+  if (directClicked) {
+    verifyAndRespond(directClicked, { direct: true });
+    return true;
   }
 
   // 步骤 2：若尚未展开，点击右上角「筛选 / 已筛选」按钮展开
@@ -965,14 +1279,26 @@ function handleSetSearchSort(msg, sendResponse) {
   }
 
   // 步骤 3：轮询等待浮层挂载并点击
-  var pollInterval = 40;
+  var pollInterval = 50;
+  var retriedCount = 0;
   var pollTimer = safeSetInterval(function () {
-    if (tryClickTarget(false)) {
+    var clicked = tryClickTarget(false);
+    if (clicked) {
       safeClearInterval(pollTimer);
-      sendResponse({ ok: true, switched: true });
+      verifyAndRespond(clicked);
       return;
     }
-    if (Date.now() - startTime >= timeout) {
+    // 若轮询 250ms、500ms 后依然未检测到浮层展开，多阶段重试点击与悬停展开
+    var elapsed = Date.now() - startTime;
+    if (elapsed >= 250 && retriedCount === 0 && toggleBtn) {
+      retriedCount = 1;
+      triggerMouseClick(toggleBtn);
+    } else if (elapsed >= 500 && retriedCount === 1 && toggleBtn) {
+      retriedCount = 2;
+      triggerMouseClick(toggleBtn.parentElement || toggleBtn);
+    }
+
+    if (elapsed >= timeout) {
       safeClearInterval(pollTimer);
       // 若超时仍未在浮层中定位，全局兜底在视口上方尝试匹配短文本胶囊
       var fallbackOpt = null;
@@ -983,7 +1309,7 @@ function handleSetSearchSort(msg, sendResponse) {
         var s = (n.textContent || '').trim();
         if (s === targetName || (targetName === '最新' && s === '最新发布')) {
           var r = typeof n.getBoundingClientRect === 'function' ? n.getBoundingClientRect() : null;
-          if (!r || (r.top >= 0 && r.top <= 350)) {
+          if (!r || (r.top >= 0 && r.top <= 450)) {
             fallbackOpt = n;
             break;
           }
@@ -991,14 +1317,72 @@ function handleSetSearchSort(msg, sendResponse) {
       }
       if (fallbackOpt) {
         triggerMouseClick(fallbackOpt);
-        sendResponse({ ok: true, switched: true, fallback: true });
+        verifyAndRespond(fallbackOpt, { fallback: true });
       } else {
-        sendResponse({ ok: false, error: 'SORT_OPTION_NOT_FOUND' });
+        sendResponse({ ok: false, error: 'SORT_OPTION_NOT_FOUND', active: false });
       }
     }
   }, pollInterval);
 
   return true; // 异步响应
+}
+
+// checkGoalContract：检查当前目标契约在页面 DOM 中是否已满足
+function handleCheckGoalContract(msg, sendResponse) {
+  var goal = msg.goal || {};
+  var achieved = false;
+  var currentActive = '';
+
+  if (goal.type === 'search_sort') {
+    var targetNames = Array.isArray(goal.targetNames) ? goal.targetNames : [goal.targetLabel || '最新'];
+    var tabs = document.querySelectorAll('button, div, span');
+    for (var t = 0; t < tabs.length; t++) {
+      var tabNode = tabs[t];
+      if (!isElementVisible(tabNode) || isCategoryTabOrNav(tabNode)) continue;
+      var txt = (tabNode.textContent || '').trim();
+      if (targetNames.indexOf(txt) !== -1 && isOptionActive(tabNode)) {
+        achieved = true;
+        currentActive = txt;
+        break;
+      }
+    }
+  }
+
+  sendResponse({
+    ok: true,
+    achieved: achieved,
+    currentActive: currentActive,
+    url: typeof window !== 'undefined' && window.location ? window.location.href : '',
+  });
+  return false;
+}
+
+// executeActionRecipe：执行原子动作配方（如根据选择器执行全套拟人交互）
+function handleExecuteActionRecipe(msg, sendResponse) {
+  var recipe = msg.recipe || {};
+  var selectors = [];
+  if (Array.isArray(recipe.selectors)) {
+    selectors = recipe.selectors;
+  } else if (Array.isArray(recipe.selector)) {
+    selectors = recipe.selector;
+  } else if (typeof recipe.selector === 'string') {
+    selectors = [recipe.selector];
+  } else if (typeof recipe.selectors === 'string') {
+    selectors = [recipe.selectors];
+  }
+  var el = findFirstElement(selectors, false);
+  if (!el) {
+    sendResponse({ ok: false, error: 'SELECTOR_NOT_FOUND' });
+    return false;
+  }
+
+  try {
+    triggerMouseClick(el);
+    sendResponse({ ok: true, executed: true });
+  } catch (err) {
+    sendResponse({ ok: false, error: String(err) });
+  }
+  return false;
 }
 
 // ----------------------------------------------------------------------------
@@ -1036,8 +1420,14 @@ if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage)
         return handleEval(message, sendResponse);
       case 'setSearchSort':
         return handleSetSearchSort(message, sendResponse);
+      case 'getInteractiveRegionHtml':
+        return handleGetInteractiveRegionHtml(message, sendResponse);
       case 'verifySelectors':
         return handleVerifySelectors(message, sendResponse);
+      case 'checkGoalContract':
+        return handleCheckGoalContract(message, sendResponse);
+      case 'executeActionRecipe':
+        return handleExecuteActionRecipe(message, sendResponse);
       default:
         sendResponse({ ok: false, error: 'UNKNOWN_ACTION' });
         return false;
@@ -1054,7 +1444,10 @@ if (typeof module !== 'undefined' && module.exports) {
     handleGetNoteDetail: handleGetNoteDetail,
     handleGetComments: handleGetComments,
     handleSetSearchSort: handleSetSearchSort,
+    handleGetInteractiveRegionHtml: handleGetInteractiveRegionHtml,
     handleVerifySelectors: handleVerifySelectors,
+    handleCheckGoalContract: handleCheckGoalContract,
+    handleExecuteActionRecipe: handleExecuteActionRecipe,
   };
 }
 

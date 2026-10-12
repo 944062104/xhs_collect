@@ -494,4 +494,108 @@ test('LLMClient.learnSitePatterns：支持扁平意图键名与 XPath/语义规�
   }
 });
 
+test('LLMClient.learnSearchSortRegion：对页面控制区域进行区域判断并提取精确排序与筛选规则', async () => {
+  installFetch((url, opts) => {
+    const bodyStr = opts?.body || '';
+    assert.ok(bodyStr.includes('区域判断') || bodyStr.includes('筛选控制区域'));
+    assert.ok(bodyStr.includes('最新') || bodyStr.includes('time_descending'));
+
+    return jsonResponse({
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            regionSelector: ['.filter', 'div[class*="filter"]'],
+            filterButton: ['.filter span', 'button.filter-btn'],
+            sortOption: ['//span[text()="最新"]', '.sort-capsule'],
+            reason: '已识别右侧筛选控制区域，成功排除左侧图文/视频分类栏',
+          }),
+        },
+      ],
+    });
+  });
+
+  try {
+    const client = new LLMClient('sk-test');
+    const skeletonHtml = `
+      <div class="nav-tabs"><div class="tab">全部</div><div class="tab">图文</div></div>
+      <div class="filter"><span class="btn">筛选</span></div>
+    `;
+    const res = await client.learnSearchSortRegion(skeletonHtml, 'time_descending');
+    assert.ok(res);
+    assert.deepEqual(res.regionSelector, ['.filter', 'div[class*="filter"]']);
+    assert.deepEqual(res.filterButton, ['.filter span', 'button.filter-btn']);
+    assert.deepEqual(res.sortOption, ['//span[text()="最新"]', '.sort-capsule']);
+    assert.ok(res.reason.includes('排除左侧'));
+  } finally {
+    restoreFetch();
+  }
+});
+
+test('LLMClient.planGoalRemediation：接收目标与现场证据，规划下一步原子交互动作', async () => {
+  installFetch((url, opts) => {
+    const bodyStr = opts?.body || '';
+    assert.ok(bodyStr.includes('search_sort'));
+    assert.ok(bodyStr.includes('最新'));
+
+    return jsonResponse({
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            action: 'HOVER_CLICK',
+            selector: ['.filter', 'button.tab'],
+            reason: '检测到浮层尚未挂载，先悬停筛选区域再点击最新胶囊',
+          }),
+        },
+      ],
+    });
+  });
+
+  try {
+    const client = new LLMClient('sk-test');
+    const goal = { type: 'search_sort', targetValue: 'time_descending', targetLabel: '最新' };
+    const evidence = {
+      htmlSnippet: '<div class="filter"><span>筛选</span></div>',
+      lastAction: { action: 'CLICK', selector: ['span'] },
+      lastError: '未检测到 active 激活态',
+      history: [],
+    };
+    const plan = await client.planGoalRemediation(goal, evidence);
+    assert.ok(plan);
+    assert.equal(plan.action, 'HOVER_CLICK');
+    assert.deepEqual(plan.selector, ['.filter', 'button.tab']);
+    assert.ok(plan.reason.includes('浮层尚未挂载'));
+  } finally {
+    restoreFetch();
+  }
+});
+
+test('LLMClient.planGoalRemediation：当 LLM 返回扁平或单字符串 selector 时自动规范化为数组', async () => {
+  installFetch(() => {
+    return jsonResponse({
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            action: 'click',
+            selector: '.filter-box',
+            reason: '单字符串自动包装为数组',
+          }),
+        },
+      ],
+    });
+  });
+
+  try {
+    const client = new LLMClient('sk-test');
+    const plan = await client.planGoalRemediation({ type: 'search_sort' }, { htmlSnippet: '<div></div>' });
+    assert.equal(plan.action, 'CLICK');
+    assert.deepEqual(plan.selector, ['.filter-box']);
+  } finally {
+    restoreFetch();
+  }
+});
+
+
 

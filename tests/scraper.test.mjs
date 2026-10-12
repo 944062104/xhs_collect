@@ -637,4 +637,218 @@ test('(s) run() 在执行中因取消引发网络/Fetch AbortError 时视为已�
   assert.equal(task.errors.length, 0, '中途取消引发 abort 不应向 task.errors 写入失败记录');
 });
 
+test('(t) 搜索阶段返回的笔记数远多于 notesLimit 时（如 DOM 一次性返回 56 条），严格截断至 notesLimit', async () => {
+  const tabs = makeTabs();
+  const raw56 = Array.from({ length: 56 }, (_, i) => `/explore/note_${i + 1}`);
+  const origSend = tabs.sendMessage;
+  tabs.sendMessage = async (id, msg) => {
+    if (msg.action === 'getNoteUrls') {
+      return { ok: true, data: raw56 };
+    }
+    return origSend(id, msg);
+  };
+
+  const { scraper, storage } = makeScraper({ tabs });
+  const task = baseTask('task_limit_cap', {
+    config: { notesLimit: 20, commentsPerNote: 0 },
+  });
+  await storage.saveTask(task);
+  await scraper.run(task);
+
+  const saved = await scraper.taskManager.getTask('task_limit_cap');
+  assert.equal(saved.progress.noteUrls.length, 20, 'noteUrls 数量应被严格限制在 notesLimit (20)');
+  assert.equal(saved.progress.notesTotal, 20, 'notesTotal 应等于 notesLimit (20)');
+  assert.equal(saved.progress.notesCollected, 20, '采集完成数应为 20');
+});
+
+test('(u) 单篇笔记在详情阶段遭遇 LLM 超时时，仅记录该篇错误并跳过，后续笔记继续正常采集', async () => {
+  const urls = ['https://xhs.com/explore/1', 'https://xhs.com/explore/2'];
+  const llm = makeLlm({ noteUrls: urls.map((u) => ({ url: u })) });
+  // 第 1 篇模拟超时抛错，第 2 篇正常
+  let call = 0;
+  llm.extractNoteDetail = async () => {
+    call++;
+    if (call === 1) throw new Error('LLM API 请求超时：超过 60 秒无响应');
+    return { title: '笔记2', content: '内容2' };
+  };
+
+  const { scraper, storage } = makeScraper({ llm });
+  const task = baseTask('task_timeout_isolation', { config: { notesLimit: 2, commentsPerNote: 0 } });
+  await storage.saveTask(task);
+  await scraper.run(task);
+
+  const saved = await scraper.taskManager.getTask('task_timeout_isolation');
+  assert.equal(saved.status, 'completed', '单篇超时不应导致任务中断或变为 cancelled');
+  assert.equal(saved.progress.notesCollected, 1, '第 2 篇应成功采集');
+  assert.equal(saved.errors.length, 1, '第 1 篇错误应登记在 errors 数组中');
+  assert.ok(saved.errors[0].error.includes('超时'));
+});
+
+test('(v) 当 DOM 提取评论成功且结果为 0 条时（笔记无评论），不回退调用 extractComments', async () => {
+  let llmCommentsCalled = false;
+  const llm = makeLlm({
+    noteUrls: [{ url: 'https://xhs.com/explore/zero_comment' }],
+  });
+  llm.extractComments = async () => {
+    llmCommentsCalled = true;
+    return [];
+  };
+
+  const tabs = makeTabs();
+  const origSend = tabs.sendMessage;
+  tabs.sendMessage = async (id, msg) => {
+    if (msg.action === 'getNoteDetail') {
+      return { ok: true, data: { title: '测试笔记', content: '内容', author: '作者' } };
+    }
+    if (msg.action === 'getComments') {
+      return { ok: true, data: [] }; // DOM 成功执行但笔记实际为 0 条评论
+    }
+    return origSend(id, msg);
+  };
+
+  const { scraper, storage } = makeScraper({ tabs, llm });
+  const task = baseTask('task_zero_comments', { config: { notesLimit: 1, commentsPerNote: 10 } });
+  await storage.saveTask(task);
+  await scraper.run(task);
+
+  assert.equal(llmCommentsCalled, false, 'DOM 已成功确定 0 评论时，不应多余调用 LLM extractComments');
+});
+
+test('(w) 搜索阶段若关键词无结果且 LLM 调用失败时，优雅完成而非崩溃，提示未发现笔记', async () => {
+  const llm = makeLlm();
+  llm.extractNoteList = async () => {
+    throw new Error('LLM API 网络请求失败：The user aborted a request.');
+  };
+
+  const tabs = makeTabs();
+  const origSend = tabs.sendMessage;
+  tabs.sendMessage = async (id, msg) => {
+    if (msg.action === 'getNoteUrls') {
+      return { ok: true, data: [] }; // 模拟敏感词/无结果
+    }
+    return origSend(id, msg);
+  };
+
+  const { scraper, storage } = makeScraper({ tabs, llm });
+  const task = baseTask('task_empty_search', { config: { notesLimit: 10 } });
+  await storage.saveTask(task);
+  await scraper.run(task);
+
+  const saved = await scraper.taskManager.getTask('task_empty_search');
+  assert.equal(saved.status, 'completed', '无搜索结果且 LLM 失败时不应崩溃标记为 failed');
+  assert.equal(saved.progress.notesTotal, 0, 'notesTotal 应为 0');
+  assert.ok(saved.progress.stepMessage.includes('未发现'), 'stepMessage 应提示未发现笔记');
+});
+
+test('(x) 搜索阶段根据 config.sortType 优先派发 setSearchSort 动作', async () => {
+  const tabs = makeTabs();
+  let sortMsg = null;
+  const origSend = tabs.sendMessage;
+  tabs.sendMessage = async (id, msg) => {
+    if (msg.action === 'setSearchSort') {
+      sortMsg = msg;
+      return { ok: true };
+    }
+    return origSend(id, msg);
+  };
+
+  const { scraper, storage } = makeScraper({ tabs });
+  const task = baseTask('task_sort_hot', {
+    config: { notesLimit: 1, sortType: 'popularity_descending' },
+  });
+  await storage.saveTask(task);
+  await scraper.run(task);
+
+  assert.ok(sortMsg, '应该触发 setSearchSort 动作');
+  assert.equal(sortMsg.sortType, 'popularity_descending');
+});
+
+test('(y) 搜索阶段当 setSearchSort 失败时降级通过 selectors 模拟点击，且未匹配时不阻断采集', async () => {
+  const tabs = makeTabs();
+  let clickMsg = null;
+  const origSend = tabs.sendMessage;
+  tabs.sendMessage = async (id, msg) => {
+    if (msg.action === 'setSearchSort') {
+      return { ok: false, error: 'NOT_FOUND' };
+    }
+    if (msg.action === 'click') {
+      clickMsg = msg;
+      return { ok: true };
+    }
+    return origSend(id, msg);
+  };
+
+  const { scraper, storage } = makeScraper({ tabs });
+  const task = baseTask('task_sort_fallback', {
+    config: { notesLimit: 1, sortType: 'popularity_descending' },
+  });
+  await storage.saveTask(task);
+  await scraper.run(task);
+
+  assert.ok(clickMsg, '应该降级触发排序选择器的点击动作');
+  assert.ok(clickMsg.selectors.length > 0, '应该传入排序标签的选择器列表');
+});
+
+test('(z) 搜索阶段闭环自愈：排序初次未生效时调用 LLM 区域判断学习并二次重试与校验', async () => {
+  const tabs = makeTabs();
+  let sortCalls = 0;
+  let llmLearnCalled = false;
+  let retryMsg = null;
+
+  const origSend = tabs.sendMessage;
+  tabs.sendMessage = async (id, msg) => {
+    if (msg.action === 'setSearchSort') {
+      sortCalls++;
+      if (sortCalls === 1) {
+        // 第一次调用：模拟点击但未激活生效
+        return { ok: true, active: false };
+      } else {
+        // 第二次调用（携带 LLM 学习到的规则）：成功激活
+        retryMsg = msg;
+        return { ok: true, active: true };
+      }
+    }
+    if (msg.action === 'getInteractiveRegionHtml') {
+      return { ok: true, html: '<div class="filter"><span class="btn">筛选</span></div>' };
+    }
+    return origSend(id, msg);
+  };
+
+  const llm = makeLlm();
+  llm.learnSearchSortRegion = async (html, targetSortType) => {
+    llmLearnCalled = true;
+    assert.equal(targetSortType, 'time_descending');
+    return {
+      regionSelector: ['.filter'],
+      filterButton: ['.filter .btn'],
+      sortOption: ['//span[text()="最新"]'],
+      reason: '识别出右侧筛选区',
+    };
+  };
+
+  const { scraper, storage } = makeScraper({ tabs, llm });
+  const task = baseTask('task_sort_self_healing', {
+    config: { notesLimit: 1, sortType: 'time_descending' },
+  });
+  await storage.saveTask(task);
+  await scraper.run(task);
+
+  assert.equal(sortCalls, 2, '应当执行两次 setSearchSort（初次执行 + AI 学习后重试）');
+  assert.equal(llmLearnCalled, true, '排序未生效时应当触发 LLM 区域判断自愈学习');
+  assert.ok(retryMsg, '第二次重试应携带参数');
+  assert.deepEqual(retryMsg.regionSelector, ['.filter'], '重试应携带 LLM 学习到的区域选择器');
+  assert.deepEqual(retryMsg.sortOption, ['//span[text()="最新"]'], '重试应携带 LLM 学习到的选项规则');
+
+  // 验证动态规则沉淀到了 storage
+  const dynamicRules = await storage.getConfig('dynamic_site_patterns');
+  assert.ok(dynamicRules && dynamicRules.search);
+  assert.deepEqual(dynamicRules.search.sortRegion, ['.filter']);
+});
+
+
+
+
+
+
+
 

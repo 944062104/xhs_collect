@@ -32,10 +32,12 @@ export class TaskManager {
       id,
       status: 'pending',
       keyword,
+      createdAt: now,
       config: {
         notesLimit: config.notesLimit ?? 20,
         commentsPerNote: config.commentsPerNote ?? 0,
         outputFormat: config.outputFormat ?? 'json',
+        ...config,
       },
       progress: {
         phase: 'idle',

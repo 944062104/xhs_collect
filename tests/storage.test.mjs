@@ -124,7 +124,17 @@ test('getLatestTask 返回最新创建的任务，若无任务返回 null', asyn
   assert.equal(latest.id, 't2');
 });
 
+test('getLatestTask 正确兼容 timestamps.createdAt 结构的真实任务', async () => {
+  const sm = makeManager();
+  // 故意让较早创建的任务 ID 在字母序上排在前面
+  await sm.saveTask({ id: 'task_aaa_early', timestamps: { createdAt: 1000 }, status: 'completed' });
+  await sm.saveTask({ id: 'task_zzz_latest', timestamps: { createdAt: 2000 }, status: 'completed' });
+  const latest = await sm.getLatestTask();
+  assert.equal(latest.id, 'task_zzz_latest', '应返回最新创建的任务 task_zzz_latest');
+});
+
 test('getRecentNotes 按 collectedAt 倒序返回指定条数笔记', async () => {
+
   const sm = makeManager();
   await sm.saveNote({ id: 'n1', taskId: 't1', collectedAt: 10, title: 'Note 1' });
   await sm.saveNote({ id: 'n2', taskId: 't1', collectedAt: 20, title: 'Note 2' });
@@ -133,5 +143,64 @@ test('getRecentNotes 按 collectedAt 倒序返回指定条数笔记', async () =
   assert.equal(notes.length, 2);
   assert.equal(notes[0].id, 'n3');
   assert.equal(notes[1].id, 'n2');
+});
+
+test('getAllTasks 返回按 createdAt 降序排列的任务列表', async () => {
+  const sm = makeManager();
+  await sm.saveTask({ id: 't1', timestamps: { createdAt: 100 }, status: 'completed' });
+  await sm.saveTask({ id: 't2', timestamps: { createdAt: 300 }, status: 'completed' });
+  await sm.saveTask({ id: 't3', timestamps: { createdAt: 200 }, status: 'completed' });
+  const tasks = await sm.getAllTasks();
+  assert.equal(tasks.length, 3);
+  assert.equal(tasks[0].id, 't2');
+  assert.equal(tasks[1].id, 't3');
+  assert.equal(tasks[2].id, 't1');
+});
+
+test('getAllNotes 返回按 collectedAt 降序排列的所有笔记', async () => {
+  const sm = makeManager();
+  await sm.saveNote({ id: 'n1', taskId: 't1', collectedAt: 10, title: 'Note 1' });
+  await sm.saveNote({ id: 'n2', taskId: 't2', collectedAt: 30, title: 'Note 2' });
+  await sm.saveNote({ id: 'n3', taskId: 't1', collectedAt: 20, title: 'Note 3' });
+  const notes = await sm.getAllNotes();
+  assert.equal(notes.length, 3);
+  assert.equal(notes[0].id, 'n2');
+  assert.equal(notes[1].id, 'n3');
+  assert.equal(notes[2].id, 'n1');
+});
+
+test('deleteTasks 批量删除指定任务并级联删除关联的笔记', async () => {
+  const sm = makeManager();
+  await sm.saveTask({ id: 't1', status: 'completed' });
+  await sm.saveTask({ id: 't2', status: 'completed' });
+  await sm.saveTask({ id: 't3', status: 'completed' });
+
+  await sm.saveNote({ id: 'n1', taskId: 't1' });
+  await sm.saveNote({ id: 'n2', taskId: 't1' });
+  await sm.saveNote({ id: 'n3', taskId: 't2' });
+  await sm.saveNote({ id: 'n4', taskId: 't3' });
+
+  // 批量删除 t1 和 t2
+  const deletedCount = await sm.deleteTasks(['t1', 't2']);
+  assert.equal(deletedCount, 2, '应成功删除 2 个任务');
+
+  assert.equal(await sm.getTask('t1'), null, 't1 应已删除');
+  assert.equal(await sm.getTask('t2'), null, 't2 应已删除');
+  assert.notEqual(await sm.getTask('t3'), null, 't3 应当保留');
+
+  const notesT1 = await sm.getNotesByTaskId('t1');
+  const notesT2 = await sm.getNotesByTaskId('t2');
+  const notesT3 = await sm.getNotesByTaskId('t3');
+  assert.deepEqual(notesT1, [], 't1 关联笔记应已删除');
+  assert.deepEqual(notesT2, [], 't2 关联笔记应已删除');
+  assert.equal(notesT3.length, 1, 't3 关联笔记应保留');
+});
+
+test('deleteTasks 传入空数组或不存在的任务 ID 时安全执行', async () => {
+  const sm = makeManager();
+  const res1 = await sm.deleteTasks([]);
+  assert.equal(res1, 0);
+  const res2 = await sm.deleteTasks(['non_existent']);
+  assert.equal(res2, 0);
 });
 

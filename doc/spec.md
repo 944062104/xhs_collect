@@ -268,7 +268,10 @@ Service Worker ↔ Content Script 使用 `chrome.tabs.sendMessage` 通信，协�
       author: "评论者",
       text: "太有用了！",
       likes: 23,
-      publishedAt: "2026-10-02"
+      publishedAt: "2026-10-02",
+      location: "广东",
+      isAuthor: false,
+      level: 1
     }
   ],
 
@@ -303,9 +306,9 @@ ObjectStore: "config"
 
 ### 5.1 角色定位
 
-LLM **只做一件事**：把 DOM HTML 片段转成结构化 JSON。
-
-不生成工作流，不决定操作步骤，不猜选择器。
+LLM 承担两项明确职责：
+1. **数据结构化提取**：把 DOM HTML 片段转成结构化 JSON 数据（主要耗时路径）。
+2. **规则自愈与学习（借鉴 web-access）**：当网站改版或选择器失效时，由用户触发或降级调用，分析 DOM 片段自适应沉淀出新的选择器与动作流配置热补丁。
 
 ### 5.2 调用时机
 
@@ -314,6 +317,7 @@ LLM **只做一件事**：把 DOM HTML 片段转成结构化 JSON。
 | 提取搜索结果列表 | 搜索结果容器的 innerHTML | `[{title, url, author, likes, type}, ...]` |
 | 提取笔记详情 | 笔记页面主体的 innerHTML | `{title, content, author, likes, tags, images, ...}` |
 | 提取评论 | 评论区的 innerHTML | `[{author, text, likes, date}, ...]` |
+| 规则自学习与自愈 | 目标页面 DOM innerHTML + targetType | 站点经验库增量补丁（selectors / recipes） |
 
 ### 5.3 Prompt 设计
 

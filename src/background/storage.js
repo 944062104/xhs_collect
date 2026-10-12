@@ -94,12 +94,22 @@ export class StorageManager {
     return list && list.length > 0 ? list[0] : null;
   }
 
+  // 返回按创建时间降序排列的所有任务（默认最多 limit 条）
+  async getAllTasks(limit = 50) {
+    const list = await this._withStore(STORE_TASKS, 'readonly', (store) => store.getAll());
+    if (!list || list.length === 0) return [];
+    list.sort((a, b) => {
+      const timeA = Number(a.timestamps?.createdAt ?? a.createdAt) || 0;
+      const timeB = Number(b.timestamps?.createdAt ?? b.createdAt) || 0;
+      return timeB - timeA;
+    });
+    return list.slice(0, limit);
+  }
+
   // 返回最新创建的任务（按 createdAt 降序），没有则返回 null。
   async getLatestTask() {
-    const list = await this._withStore(STORE_TASKS, 'readonly', (store) => store.getAll());
-    if (!list || list.length === 0) return null;
-    list.sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0));
-    return list[0];
+    const list = await this.getAllTasks(1);
+    return list && list.length > 0 ? list[0] : null;
   }
 
   async updateTaskProgress(id, progress) {
@@ -107,6 +117,53 @@ export class StorageManager {
     if (!task) throw new Error(`updateTaskProgress: task ${id} not found`);
     task.progress = progress;
     await this.saveTask(task);
+  }
+
+  // 批量删除任务并级联删除关联的笔记。返回成功删除的任务数量。
+  async deleteTasks(taskIds = []) {
+    if (!Array.isArray(taskIds) || taskIds.length === 0) return 0;
+    const targetSet = new Set(taskIds.filter(Boolean));
+    if (targetSet.size === 0) return 0;
+
+    const db = await this.open();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction([STORE_TASKS, STORE_NOTES], 'readwrite');
+      const taskStore = tx.objectStore(STORE_TASKS);
+      const noteStore = tx.objectStore(STORE_NOTES);
+      let deletedTasksCount = 0;
+
+      // 1. 删除任务
+      targetSet.forEach((tid) => {
+        const getReq = taskStore.get(tid);
+        getReq.onsuccess = () => {
+          if (getReq.result) {
+            taskStore.delete(tid);
+            deletedTasksCount += 1;
+          }
+        };
+      });
+
+      // 2. 级联删除关联笔记
+      const noteIndex = noteStore.index('taskId');
+      targetSet.forEach((tid) => {
+        const cursorReq = noteIndex.openKeyCursor(IDBKeyRange.only(tid));
+        cursorReq.onsuccess = () => {
+          const cursor = cursorReq.result;
+          if (cursor) {
+            noteStore.delete(cursor.primaryKey);
+            cursor.continue();
+          }
+        };
+      });
+
+      tx.oncomplete = () => resolve(deletedTasksCount);
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error || new Error('transaction aborted'));
+    });
+  }
+
+  async deleteTask(id) {
+    return this.deleteTasks([id]);
   }
 
   // ---- Notes ----
@@ -119,12 +176,17 @@ export class StorageManager {
     return this._withStore(STORE_NOTES, 'readonly', (store) => store.index('taskId').getAll(taskId));
   }
 
-  // 获取最近采集的笔记（按 collectedAt 降序），默认最多 limit 条
-  async getRecentNotes(limit = 10) {
+  // 获取按 collectedAt 降序排列的笔记（默认最多 limit 条）
+  async getAllNotes(limit = 500) {
     const list = await this._withStore(STORE_NOTES, 'readonly', (store) => store.getAll());
     if (!list || list.length === 0) return [];
     list.sort((a, b) => (Number(b.collectedAt) || 0) - (Number(a.collectedAt) || 0));
     return list.slice(0, limit);
+  }
+
+  // 获取最近采集的笔记（按 collectedAt 降序），默认最多 limit 条
+  async getRecentNotes(limit = 10) {
+    return this.getAllNotes(limit);
   }
 
   // ---- Config ----

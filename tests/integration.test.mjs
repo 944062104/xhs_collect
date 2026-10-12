@@ -246,9 +246,10 @@ test('(a) 核心链路：START_TASK 采集 3 篇并导出 JSON/CSV', async () =>
   assert.equal(lines.length, 4, 'CSV 应为 表头 + 3 数据行');
   assert.equal(
     lines[0],
-    'id,taskId,url,title,content,author,likes,tags,commentsCount,collectedAt',
+    'id,taskId,url,title,content,author,authorId,likes,collects,commentsCount,publishedAt,coverUrl,tags,collectedAt',
     'CSV 表头应完整'
   );
+
 });
 
 // ---------------------------------------------------------------------------

@@ -702,6 +702,92 @@ test('onMessage setSearchSort：浮层未展开时绝不误判全局文本为排
   assert.equal(realFilterClicked, true, '应先点击展开筛选按钮');
 });
 
+test('onMessage setSearchSort：点击嵌套在 span 中的排序胶囊时事件能够冒泡至外层父容器', async () => {
+  resetDoc();
+  let parentClicked = false;
+  let childClicked = false;
+
+  const popup = makeElement('div', { className: 'filter-panel' });
+  const header = makeElement('span', { textContent: '排序依据' });
+  const optWrapper = makeElement('div', { className: 'capsule-box' });
+  const optSpan = makeElement('span', { textContent: '最多点赞' });
+
+  optSpan.parentElement = optWrapper;
+  optWrapper.parentElement = popup;
+  header.parentElement = popup;
+  popup.children = [header, optWrapper];
+
+  optSpan.click = () => { childClicked = true; };
+  optWrapper.click = () => { parentClicked = true; };
+
+  docState.allMatches = {
+    'div, span, p, label, section, h3, h4': [header],
+    'button, div, span, a': [optSpan],
+  };
+
+  const { response } = dispatch({ action: 'setSearchSort', sortType: 'popularity_descending' });
+  const resp = await response;
+  assert.equal(resp.ok, true);
+  assert.equal(childClicked, true, '子节点 span 应被触发点击');
+  assert.equal(parentClicked, true, '包裹胶囊的父容器 div 亦应被触发点击（满足 React 合成事件）');
+});
+
+test('onMessage getInteractiveRegionHtml：提取顶部交互控制区域骨架 HTML', async () => {
+  resetDoc();
+  const filterBtn = makeElement('div', { textContent: ' 筛选 ', className: 'filter-trigger' });
+  docState.textMatches['筛选'] = filterBtn;
+  docState.cssMatches['.filter, [class*="filter-btn"], [class*="filterBtn"], [class*="filter-trigger"], div[class*="filter"]'] = filterBtn;
+
+  const { response } = dispatch({ action: 'getInteractiveRegionHtml' });
+  const resp = await response;
+  assert.equal(resp.ok, true);
+  assert.ok(typeof resp.html === 'string');
+  assert.ok(resp.html.includes('filter-trigger') || resp.html.includes('筛选'));
+});
+
+test('onMessage setSearchSort：校验胶囊激活态 active 并返回判断结果', async () => {
+  resetDoc();
+  const header = makeElement('span', { textContent: '排序依据' });
+  // 胶囊带有 active 类名
+  const optLatest = makeElement('div', { textContent: '最新', className: 'capsule-btn active' });
+  const popup = makeElement('div', { className: 'filter-panel' });
+  popup.children = [header, optLatest];
+  header.parentElement = popup;
+
+  docState.allMatches = {
+    'div, span, p, label, section, h3, h4': [header],
+    'button, div, span, a': [optLatest],
+  };
+
+  const { response } = dispatch({ action: 'setSearchSort', sortType: 'time_descending' });
+  const resp = await response;
+  assert.equal(resp.ok, true);
+  assert.equal(resp.active, true, '应当检测到胶囊处于 active 激活态');
+});
+
+test('onMessage setSearchSort：支持限定 regionSelector 区域以排除干扰并精准点击', async () => {
+  resetDoc();
+  let scopedSortClicked = false;
+  // 模拟限定区域内的容器与胶囊
+  const regionContainer = makeElement('div', { className: 'custom-filter-box' });
+  const optLatest = makeElement('span', { textContent: '最新' });
+  optLatest.click = () => { scopedSortClicked = true; };
+  regionContainer.children = [optLatest];
+  regionContainer.querySelectorAll = (sel) => [optLatest];
+
+  docState.cssMatches['.custom-filter-box'] = regionContainer;
+
+  const { response } = dispatch({
+    action: 'setSearchSort',
+    sortType: 'time_descending',
+    regionSelector: ['.custom-filter-box'],
+    sortOption: ['span'],
+  });
+  const resp = await response;
+  assert.equal(resp.ok, true);
+  assert.equal(scopedSortClicked, true, '应在限定区域内找到并点击最新排序选项');
+});
+
 test('onMessage verifySelectors：测试候选选择器并返回匹配计数与文本样本', async () => {
   resetDoc();
 
@@ -783,7 +869,36 @@ test('onMessage verifySelectors：支持回测 XPath 与文本锚点意图规则
   assert.equal(resp.results['search.sortLatest'].sampleText, '最新发布');
 });
 
+test('onMessage checkGoalContract：准确报告目标契约是否满足', async () => {
+  resetDoc();
+  const optLatest = makeElement('button', { textContent: '最新', className: 'tab active' });
+  docState.allMatches = {
+    'button, div, span': [optLatest],
+  };
 
+  const { response } = dispatch({
+    action: 'checkGoalContract',
+    goal: { type: 'search_sort', targetNames: ['最新', '最新发布'] },
+  });
 
+  const resp = await response;
+  assert.equal(resp.ok, true);
+  assert.equal(resp.achieved, true, '应检测到目标契约已达成');
+});
 
+test('onMessage executeActionRecipe：执行指定选择器的拟人交互', async () => {
+  resetDoc();
+  let clicked = false;
+  const targetBtn = makeElement('button', { textContent: '最新' });
+  targetBtn.click = () => { clicked = true; };
+  docState.cssMatches['.target-pill'] = targetBtn;
 
+  const { response } = dispatch({
+    action: 'executeActionRecipe',
+    recipe: { action: 'HOVER_CLICK', selector: ['.target-pill'] },
+  });
+
+  const resp = await response;
+  assert.equal(resp.ok, true);
+  assert.equal(clicked, true, '应成功触发目标按钮点击');
+});

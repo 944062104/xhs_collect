@@ -381,25 +381,107 @@ export class Scraper {
         timeout: 10000,
       });
 
-      // 2. 双重保障：在页面中模拟点击对应的排序标签（如“最新”、“最多点赞”）
+      // 2. 双重保障与闭环自愈：在页面中模拟点击对应的排序标签（如“最新”、“最多点赞”）
       if (sortType && sortType !== 'general') {
         try {
           this._throwIfCancelled(task.id);
-          // 优先调用 content-script 内置的 setSearchSort（支持复合鼠标事件及展开延迟等待）
-          const sortRes = await this._send(tabId, {
+          const sortLabelMap = {
+            time_descending: '最新发布',
+            popularity_descending: '最多点赞',
+            comments_descending: '最多评论',
+          };
+          const sortLabel = sortLabelMap[sortType] || sortType;
+          task.progress.stepMessage = `正在切换排序为“${sortLabel}”...`;
+          await this.taskManager.saveProgress(task, { stepMessage: task.progress.stepMessage });
+
+          // 步骤 1：先执行
+          let sortRes = await this._send(tabId, {
             action: 'setSearchSort',
             sortType,
             timeout: 5000,
           }).catch(() => null);
 
-          if (sortRes && sortRes.ok) {
-            // 切换排序后小红书瀑布流会重新拉取，等待 2 秒让新列表渲染
-            await this.sleep(2000, task.id);
+          // 步骤 2：判断有没有成功 (若返回 active: false 或 ok: false 则判定未生效)
+          let isSuccess = Boolean(sortRes && sortRes.ok && sortRes.active !== false);
+
+          // 步骤 3：如果失败或未激活，进入闭环多轮自学习与验证流程（学习 -> 验证 -> 失败带反馈重学 -> 再验证）
+          const MAX_LEARN_ROUNDS = 2;
+          let round = 0;
+          let lastFailedRule = null;
+
+          while (!isSuccess && round < MAX_LEARN_ROUNDS && this.llm && typeof this.llm.learnSearchSortRegion === 'function') {
+            round++;
+            try {
+              task.progress.stepMessage = `排序未生效，正在进行第 ${round} 轮 AI 区域定位与自学习...`;
+              await this.taskManager.saveProgress(task, { stepMessage: task.progress.stepMessage });
+
+              // 抓取顶部交互控制区域 HTML 骨架（content-script 会确保展开浮层后再抓取）
+              const regionResp = await this._send(tabId, { action: 'getInteractiveRegionHtml' }).catch(() => null);
+              const regionHtml = regionResp?.html || '';
+
+              if (regionHtml && regionHtml.length > 30) {
+                const feedback = lastFailedRule
+                  ? `上一轮尝试的规则 ${JSON.stringify(lastFailedRule)} 点击后未检测到 active 激活态，请重新定位容器与胶囊。`
+                  : '';
+                const learned = await this.llm.learnSearchSortRegion(regionHtml, sortType, feedback);
+
+                if (learned && (learned.regionSelector?.length > 0 || learned.sortOption?.length > 0 || learned.filterButton?.length > 0)) {
+                  lastFailedRule = { region: learned.regionSelector, sort: learned.sortOption };
+                  task.progress.stepMessage = `第 ${round} 轮 AI 学习完成 (${learned.reason || '已调整规则'})，正在验证执行...`;
+                  await this.taskManager.saveProgress(task, { stepMessage: task.progress.stepMessage });
+
+                  // 动态保存与热重载规则
+                  const dynamicPatterns = (await this.storage?.getConfig('dynamic_site_patterns')) || {};
+                  dynamicPatterns.search = dynamicPatterns.search || {};
+                  if (learned.regionSelector?.length) dynamicPatterns.search.sortRegion = learned.regionSelector;
+                  if (learned.filterButton?.length) dynamicPatterns.search.filterButton = learned.filterButton;
+                  if (learned.sortOption?.length) {
+                    dynamicPatterns.search.sortTabs = dynamicPatterns.search.sortTabs || {};
+                    dynamicPatterns.search.sortTabs[sortType] = learned.sortOption;
+                  }
+                  await this.storage?.saveConfig('dynamic_site_patterns', dynamicPatterns);
+                  if (typeof this._mergeDynamicPatterns === 'function') {
+                    this._mergeDynamicPatterns(dynamicPatterns);
+                  }
+
+                  // 再次执行
+                  sortRes = await this._send(tabId, {
+                    action: 'setSearchSort',
+                    sortType,
+                    regionSelector: learned.regionSelector,
+                    filterButton: learned.filterButton,
+                    sortOption: learned.sortOption,
+                    timeout: 5000,
+                  }).catch(() => null);
+
+                  // 再次严格验证判断
+                  isSuccess = Boolean(sortRes && sortRes.ok && sortRes.active !== false);
+                }
+              }
+            } catch (_) {
+              // 自学异常降级处理
+            }
+          }
+
+          if (isSuccess) {
+            task.progress.stepMessage = `已成功切换为“${sortLabel}”，正在加载数据...`;
+            await this.taskManager.saveProgress(task, { stepMessage: task.progress.stepMessage });
+            // 切换排序后小红书瀑布流会异步拉取新数据，等待 3 秒确保新排序卡片渲染完成
+            await this.sleep(3000, task.id);
           } else {
             // 降级兜底：尝试使用 site-patterns 中的选择器点击
+            let fallbackClicked = false;
             const sortSelectors = this._sel(`search.sortTabs.${sortType}`);
             if (sortSelectors && sortSelectors.length > 0) {
-              await this._send(tabId, { action: 'click', selectors: sortSelectors }).catch(() => {});
+              const clickRes = await this._send(tabId, { action: 'click', selectors: sortSelectors }).catch(() => null);
+              if (clickRes && clickRes.ok) {
+                fallbackClicked = true;
+                await this.sleep(2500, task.id);
+              }
+            }
+            if (!fallbackClicked) {
+              task.progress.stepMessage = `⚠️ 页面排序未成功切换（已自动降级按当前内容采集）...`;
+              await this.taskManager.saveProgress(task, { stepMessage: task.progress.stepMessage });
               await this.sleep(1500, task.id);
             }
           }

@@ -21,10 +21,12 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .popup {
-  width: 340px;
+  width: 360px;
   max-width: 100%;
   margin: 0 auto;
   padding: 16px;
@@ -417,7 +419,8 @@ input[type="checkbox"] {
   transition: max-height 0.3s ease, padding 0.3s ease;
 }
 .adv-panel.open {
-  max-height: 720px;
+  max-height: 1200px;
+  overflow-y: visible;
   padding: 0 14px 14px;
 }
 .adv-panel > .field {
@@ -658,8 +661,9 @@ input[type="checkbox"] {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  max-height: 180px;
+  max-height: 260px;
   overflow-y: auto;
+  padding-right: 2px;
 }
 .pattern-report-item {
   padding: 6px 8px;
