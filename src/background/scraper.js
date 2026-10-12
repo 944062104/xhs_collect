@@ -16,6 +16,7 @@
 // getHTML / closeModal。选择器键（如 search.feedsContainer）由此文件翻译为候选数组。
 
 import { TaskManager } from './task-manager.js';
+import { isNoteMatchingThresholds } from './filters.js';
 
 // 取消信号错误：run/resume 的 catch 会据此把任务置为 cancelled 而非 failed。
 class ScraperCancelledError extends Error {
@@ -608,6 +609,28 @@ export class Scraper {
         timeout: 10000,
       });
 
+      // 1.5 若配置了多维搜索筛选（笔记类型、发布时间等），派发 applySearchFilters 消息进行页面胶囊交互
+      const noteType = task.config?.noteType;
+      const publishTime = task.config?.publishTime;
+      const hasMultiFilters = Boolean(
+        (noteType && noteType !== 'all') ||
+        (publishTime && publishTime !== 'all') ||
+        (sortType && ['comments_descending', 'collects_descending'].includes(sortType))
+      );
+      if (hasMultiFilters) {
+        try {
+          await this._send(tabId, {
+            action: 'applySearchFilters',
+            filters: {
+              sortType: sortType || 'general',
+              noteType: noteType || 'all',
+              publishTime: publishTime || 'all',
+            },
+          });
+          await this.sleep(400, task.id);
+        } catch (_) {}
+      }
+
       // 2. 双重保障与目标驱动自愈循环（借鉴 web-access 交互理念）：
       // 先检查目标契约是否满足，若未满足则结合现场 DOM 证据持续观测、决策并执行，直到目标做完为止
       if (sortType && sortType !== 'general') {
@@ -615,11 +638,14 @@ export class Scraper {
           time_descending: '最新发布',
           popularity_descending: '最多点赞',
           comments_descending: '最多评论',
+          collects_descending: '最多收藏',
         };
         const sortLabel = sortLabelMap[sortType] || sortType;
         const targetNames = sortType === 'time_descending'
           ? ['最新', '最新发布']
-          : (sortType === 'popularity_descending' ? ['最多点赞', '最热'] : ['最多评论']);
+          : (sortType === 'popularity_descending'
+            ? ['最多点赞', '最热']
+            : (sortType === 'collects_descending' ? ['最多收藏'] : ['最多评论']));
 
         const goal = {
           type: 'search_sort',
@@ -826,6 +852,23 @@ export class Scraper {
             seen.add(key);
             return true;
           });
+        }
+
+        // 数据质量门槛过滤：点赞数、收藏数、评论数、发布日期等
+        if (task.config?.thresholds) {
+          const check = isNoteMatchingThresholds(detail, task.config.thresholds);
+          if (!check.pass) {
+            task.progress.skippedThresholdCount = (task.progress.skippedThresholdCount || 0) + 1;
+            task.progress.currentNoteIndex = i;
+            task.progress.stepMessage = `第 ${i + 1} 篇《${(detail.title || '无标题').slice(0, 15)}》${check.reason || '未达门槛'}，已跳过`;
+            await this.taskManager.saveProgress(task, {
+              currentNoteIndex: task.progress.currentNoteIndex,
+              skippedThresholdCount: task.progress.skippedThresholdCount,
+              stepMessage: task.progress.stepMessage,
+            });
+            await this._randomPause(task);
+            continue;
+          }
         }
 
         const note = {

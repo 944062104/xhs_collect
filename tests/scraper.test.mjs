@@ -1013,6 +1013,87 @@ test('(cc) 严格前置门禁：当自愈学习未达成契约时，严禁降级
   assert.equal(updatedTask.progress.remediationState.achieved, false, '自愈状态应当为 achieved: false');
 });
 
+test('(dd) 搜索阶段集成多维筛选：当配置了 noteType 或 publishTime 时派发 applySearchFilters 消息', async () => {
+  const tabs = makeTabs();
+  let applyFiltersMsg = null;
+
+  const origSend = tabs.sendMessage;
+  tabs.sendMessage = async (id, msg) => {
+    if (msg.action === 'applySearchFilters') {
+      applyFiltersMsg = msg;
+      return { ok: true, applied: { '最多评论': true, '图文': true } };
+    }
+    return origSend(id, msg);
+  };
+
+  const { scraper, storage } = makeScraper({ tabs });
+  const task = baseTask('task_multi_filters', {
+    config: {
+      notesLimit: 1,
+      sortType: 'comments_descending',
+      noteType: 'image',
+      publishTime: 'week',
+    },
+  });
+  await storage.saveTask(task);
+  await scraper.run(task);
+
+  assert.ok(applyFiltersMsg, '应当向页面派发 applySearchFilters 消息');
+  assert.equal(applyFiltersMsg.filters.sortType, 'comments_descending');
+  assert.equal(applyFiltersMsg.filters.noteType, 'image');
+  assert.equal(applyFiltersMsg.filters.publishTime, 'week');
+});
+
+test('(ee) 详情阶段数据门槛过滤：未达门槛的笔记被跳过且不计入 notesCollected', async () => {
+  const tabs = makeTabs();
+  const origSend = tabs.sendMessage;
+  let detailCalls = 0;
+
+  tabs.sendMessage = async (id, msg) => {
+    if (msg.action === 'getNoteDetail') {
+      detailCalls++;
+      if (detailCalls === 1) {
+        // 第 1 篇：点赞 50（不满足 minLikes: 100）
+        return {
+          ok: true,
+          data: { title: '低赞笔记', content: '测试内容', likes: 50, collects: 10, totalComments: 2 },
+        };
+      } else {
+        // 第 2 篇：点赞 150（满足）
+        return {
+          ok: true,
+          data: { title: '高赞笔记', content: '测试内容', likes: 150, collects: 80, totalComments: 30 },
+        };
+      }
+    }
+    if (msg.action === 'getNoteUrls') {
+      return { ok: true, data: ['https://www.xiaohongshu.com/explore/note1', 'https://www.xiaohongshu.com/explore/note2'] };
+    }
+    return origSend(id, msg);
+  };
+
+  const { scraper, storage } = makeScraper({ tabs });
+  const task = baseTask('task_threshold_filter', {
+    config: {
+      notesLimit: 2,
+      thresholds: { minLikes: 100 },
+    },
+  });
+  await storage.saveTask(task);
+  await scraper.run(task);
+
+  const updatedTask = await storage.getTask('task_threshold_filter');
+  // 第 1 篇被跳过，第 2 篇通过，因此 notesCollected 应为 1
+  assert.equal(updatedTask.progress.notesCollected, 1, '只有达标笔记才计入 notesCollected');
+  assert.equal(updatedTask.progress.skippedThresholdCount, 1, '未达标笔记应当增加 skippedThresholdCount');
+
+  // 验证保存的笔记只有高赞笔记
+  const allNotes = await storage.getNotesByTaskId('task_threshold_filter');
+  assert.equal(allNotes.length, 1);
+  assert.equal(allNotes[0].title, '高赞笔记');
+});
+
+
 
 
 
