@@ -371,8 +371,9 @@ export class Scraper {
       return { achieved: true, rounds: 0 };
     }
 
-    // 2. 若未达成，优先执行内置的经典交互尝试（例如先点一次筛选或排序按钮）
-    if (goal.type === 'search_sort' && goal.sortType) {
+    // 2. 若未达成，在常规模式下优先执行内置的经典交互尝试（例如先点一次筛选或排序按钮）
+    // 当 task.config.forceAiRemediation 为 true 时（或测试模式下），直接跳过内置尝试，强制进入 AI 规划研判
+    if (!task?.config?.forceAiRemediation && goal.type === 'search_sort' && goal.sortType) {
       try {
         const directRes = await this._send(tabId, {
           action: 'setSearchSort',
@@ -545,7 +546,9 @@ export class Scraper {
       let url = this._searchUrl(kw);
       const sortType = task.config?.sortType;
       // 1. 若指定了排序规则，优先在 URL 查询参数中附加 sort（小红书最新接口支持在 URL 中直传）
-      if (sortType && sortType !== 'general') {
+      // 1. 若指定了排序规则，优先在 URL 查询参数中附加 sort（小红书最新接口支持在 URL 中直传）
+      // 当显式开启 forceAiRemediation（屏蔽原生规则测试）时不附加 URL 参数，检验纯 AI 自愈能力
+      if (!task.config?.forceAiRemediation && sortType && sortType !== 'general') {
         url += (url.includes('?') ? '&' : '?') + `sort=${encodeURIComponent(sortType)}`;
       }
 
@@ -587,14 +590,16 @@ export class Scraper {
           await this.taskManager.saveProgress(task, { stepMessage: task.progress.stepMessage });
           await this.sleep(3000, task.id);
         } else {
-          // 降级兜底：尝试使用 site-patterns 中的选择器点击
+          // 降级兜底：尝试使用 site-patterns 中的选择器点击（测试模式下跳过）
           let fallbackClicked = false;
-          const sortSelectors = this._sel(`search.sortTabs.${sortType}`);
-          if (sortSelectors && sortSelectors.length > 0) {
-            const clickRes = await this._send(tabId, { action: 'click', selectors: sortSelectors }).catch(() => null);
-            if (clickRes && clickRes.ok) {
-              fallbackClicked = true;
-              await this.sleep(2500, task.id);
+          if (!task.config?.forceAiRemediation) {
+            const sortSelectors = this._sel(`search.sortTabs.${sortType}`);
+            if (sortSelectors && sortSelectors.length > 0) {
+              const clickRes = await this._send(tabId, { action: 'click', selectors: sortSelectors }).catch(() => null);
+              if (clickRes && clickRes.ok) {
+                fallbackClicked = true;
+                await this.sleep(2500, task.id);
+              }
             }
           }
           if (!fallbackClicked) {

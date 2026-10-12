@@ -33,6 +33,7 @@ test('buildStartMessage 默认参数生成标准 START_TASK 消息', () => {
     outputFormat: 'json',
     crawlDelay: 0,
     sortType: 'general',
+    forceAiRemediation: false,
   });
 });
 

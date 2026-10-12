@@ -22,6 +22,7 @@ function buildStartMessage(keyword, opts = {}) {
   const format = opts.format === 'csv' ? 'csv' : 'json';
   const crawlDelay = typeof opts.crawlDelay === 'number' ? opts.crawlDelay : 0;
   const sortType = opts.sortType || 'general';
+  const forceAiRemediation = Boolean(opts.forceAiRemediation);
   return {
     type: 'START_TASK',
     keyword,
@@ -31,6 +32,7 @@ function buildStartMessage(keyword, opts = {}) {
       outputFormat: format,
       crawlDelay,
       sortType,
+      forceAiRemediation,
     },
   };
 }
@@ -407,6 +409,7 @@ function initPopup() {
     testFeedback: $('testFeedback'),
     comments: $('comments'),
     delay: $('delay'),
+    forceAiRemediation: $('forceAiRemediation'),
     saveHint: $('saveHint'),
     resetBtn: $('resetBtn'),
     learnPatternsBtn: $('learnPatternsBtn'),
@@ -442,12 +445,15 @@ function initPopup() {
 
   function loadConfig() {
     if (!chrome || !chrome.storage || !chrome.storage.local) return;
-    chrome.storage.local.get(['apiBase', 'model', 'apiKey', 'protocol', 'comments', 'commentsDepth', 'crawlDelay', 'limit', 'sortType'], (cfg) => {
+    chrome.storage.local.get(['apiBase', 'model', 'apiKey', 'protocol', 'comments', 'commentsDepth', 'crawlDelay', 'limit', 'sortType', 'forceAiRemediation'], (cfg) => {
       if (cfg.apiBase && els.apiBase) els.apiBase.value = cfg.apiBase;
       if (cfg.model && els.model) els.model.value = cfg.model;
       if (cfg.apiKey && els.apiKey) els.apiKey.value = cfg.apiKey;
       if (cfg.protocol && els.protocol) els.protocol.value = cfg.protocol;
       if (cfg.sortType && els.sortType) els.sortType.value = cfg.sortType;
+      if (els.forceAiRemediation) {
+        els.forceAiRemediation.checked = cfg.forceAiRemediation !== undefined ? Boolean(cfg.forceAiRemediation) : true;
+      }
       
       let depth = 20;
       if (cfg.commentsDepth !== undefined) {
@@ -484,6 +490,7 @@ function initPopup() {
         crawlDelay,
         limit: els.limit ? Number(els.limit.value) || 20 : 20,
         sortType: els.sortType ? els.sortType.value : 'general',
+        forceAiRemediation: els.forceAiRemediation ? els.forceAiRemediation.checked : false,
       },
       () => showSaveHint()
     );
@@ -689,6 +696,7 @@ function initPopup() {
       format: 'json',
       crawlDelay: Number(els.delay.value) || 0,
       sortType: els.sortType ? els.sortType.value : 'general',
+      forceAiRemediation: els.forceAiRemediation ? els.forceAiRemediation.checked : false,
     });
     chrome.runtime.sendMessage(msg, (resp) => {
       if (chrome.runtime.lastError || !resp) {
