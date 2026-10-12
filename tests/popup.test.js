@@ -394,4 +394,37 @@ test('renderPatternReportHtml 渲染正确的状态徽章与选择器代码', ()
   assert.ok(html.includes('穿搭灵感'));
 });
 
+// ---------------------------------------------------------------------------
+// renderRemediationItem
+// ---------------------------------------------------------------------------
+
+test('renderRemediationItem 渲染 AI 自愈决策流水卡片', () => {
+  const { renderRemediationItem } = require('../src/popup/popup.js');
+  const item = {
+    round: 1,
+    diagnosis: '浮层未展开，先点击筛选',
+    action: 'CLICK',
+    selector: ['.filter-btn'],
+    executed: true,
+    achieved: false,
+  };
+  const html = renderRemediationItem(item);
+  assert.ok(html.includes('第 1 轮研判'));
+  assert.ok(html.includes('浮层未展开，先点击筛选'));
+  assert.ok(html.includes('CLICK [&quot;.filter-btn&quot;]'));
+  assert.ok(html.includes('remediation-badge pending'));
+  assert.ok(html.includes('已执行'));
+
+  const itemSuccess = {
+    round: 2,
+    diagnosis: '点击最新发布胶囊',
+    achieved: true,
+  };
+  const htmlSuccess = renderRemediationItem(itemSuccess);
+  assert.ok(htmlSuccess.includes('第 2 轮研判'));
+  assert.ok(htmlSuccess.includes('remediation-badge success'));
+  assert.ok(htmlSuccess.includes('已达成契约'));
+});
+
+
 

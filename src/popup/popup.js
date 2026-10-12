@@ -246,6 +246,28 @@ function renderNotePreviewRow(note) {
   `.trim();
 }
 
+// 生成单条自愈流水条目的 HTML 片段
+function renderRemediationItem(item) {
+  if (!item) return '';
+  const round = item.round || 1;
+  const isSuccess = Boolean(item.achieved);
+  const badgeText = isSuccess ? '已达成契约' : (item.executed ? '已执行' : '待执行');
+  const badgeClass = isSuccess ? 'success' : 'pending';
+  const diag = escapeHtml(item.diagnosis || '现场研判中...');
+  const actionText = escapeHtml(item.action ? `${item.action} ${item.selector ? JSON.stringify(item.selector) : ''}` : '');
+
+  return `
+    <div class="remediation-item">
+      <div class="remediation-round">
+        <span>第 ${round} 轮研判</span>
+        <span class="remediation-badge ${badgeClass}">${badgeText}</span>
+      </div>
+      <div class="remediation-diag">${diag}</div>
+      ${actionText ? `<div class="remediation-action">动作: ${actionText}</div>` : ''}
+    </div>
+  `.trim();
+}
+
 // 格式化任务历史条目的展示信息
 function formatTaskHistoryItem(task) {
   if (!task) return { keyword: '', count: 0, statusText: '未知', summary: '' };
@@ -400,6 +422,9 @@ function initPopup() {
     debugModalTitle: $('debugModalTitle'),
     debugModalPre: $('debugModalPre'),
     closeDebugModalBtn: $('closeDebugModalBtn'),
+    remediationCard: $('remediationCard'),
+    remediationList: $('remediationList'),
+    toggleRemediationBtn: $('toggleRemediationBtn'),
   };
 
   let taskId = null;
@@ -567,6 +592,18 @@ function initPopup() {
       updateExportButtons(count);
       if (els.finishEarlyBtn) {
         els.finishEarlyBtn.style.display = (resp.status === 'running' && count > 0) ? 'block' : 'none';
+      }
+
+      // 实时渲染 🧠 AI 目标研判与自愈流水
+      const remState = resp.progress?.remediationState;
+      if (els.remediationCard && els.remediationList) {
+        if (remState && Array.isArray(remState.history) && remState.history.length > 0) {
+          els.remediationCard.style.display = 'block';
+          els.remediationList.innerHTML = remState.history.map(renderRemediationItem).join('');
+        } else if (resp.status !== 'running') {
+          // 非运行态且无流水时保持隐藏
+          els.remediationCard.style.display = 'none';
+        }
       }
 
       // 未登录拦截：明确提示登录，停止轮询（不再无限重试）。
@@ -1224,6 +1261,14 @@ function initPopup() {
     });
   }
 
+  if (els.toggleRemediationBtn && els.remediationList) {
+    els.toggleRemediationBtn.addEventListener('click', () => {
+      const isHidden = els.remediationList.style.display === 'none';
+      els.remediationList.style.display = isHidden ? 'flex' : 'none';
+      els.toggleRemediationBtn.textContent = isHidden ? '收起' : '展开';
+    });
+  }
+
   loadConfig();
   loadLatestTask();
   loadSavedPatternReport();
@@ -1248,6 +1293,7 @@ if (typeof module !== 'undefined' && module.exports) {
     renderNotePreviewRow,
     formatTaskHistoryItem,
     renderHistoryItemHtml,
+    renderRemediationItem,
     escapeHtml,
     formatPatternReport,
     renderPatternReportHtml,

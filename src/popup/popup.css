@@ -771,4 +771,80 @@ input[type="checkbox"] {
   word-break: break-all;
 }
 
+/* AI 动态自愈卡片与流水时间线 */
+.remediation-card {
+  margin-top: 10px;
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.remediation-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.remediation-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #166534;
+}
+.btn-micro-ghost {
+  background: transparent;
+  border: none;
+  color: #15803d;
+  font-size: 11px;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+.btn-micro-ghost:hover {
+  text-decoration: underline;
+}
+.remediation-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 140px;
+  overflow-y: auto;
+}
+.remediation-item {
+  font-size: 11px;
+  background: #ffffff;
+  border: 1px solid #dcfce7;
+  border-radius: 6px;
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.remediation-round {
+  display: flex;
+  justify-content: space-between;
+  font-weight: 600;
+  color: #14532d;
+}
+.remediation-badge {
+  font-size: 10px;
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+.remediation-badge.success {
+  background: #dcfce7;
+  color: #166534;
+}
+.remediation-badge.pending {
+  background: #fef3c7;
+  color: #92400e;
+}
+.remediation-diag {
+  color: #334155;
+  font-size: 11px;
+}
+.remediation-action {
+  color: #64748b;
+  font-family: monospace;
+  font-size: 10px;
+}
+
 
