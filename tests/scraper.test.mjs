@@ -845,6 +845,80 @@ test('(z) 搜索阶段闭环自愈：排序初次未生效时调用 LLM 区域�
   assert.deepEqual(dynamicRules.search.sortRegion, ['.filter']);
 });
 
+test('(aa) 目标导向自愈循环：基于 planGoalRemediation 动态研判与动作执行，达成目标后记录历史流水', async () => {
+  const tabs = makeTabs();
+  let executedRecipes = [];
+  let contractStatus = false;
+  let planCalls = 0;
+
+  const origSend = tabs.sendMessage;
+  tabs.sendMessage = async (id, msg) => {
+    if (msg.action === 'checkGoalContract') {
+      return { ok: true, achieved: contractStatus, currentActive: contractStatus ? '最新' : '综合' };
+    }
+    if (msg.action === 'setSearchSort') {
+      // 模拟直接设置排序失败
+      return { ok: true, active: false };
+    }
+    if (msg.action === 'executeActionRecipe') {
+      executedRecipes.push(msg.recipe);
+      // 在第二轮动作后模拟 DOM 状态成功变更
+      if (planCalls >= 2) {
+        contractStatus = true;
+      }
+      return { ok: true, executed: true };
+    }
+    if (msg.action === 'getInteractiveRegionHtml') {
+      return { ok: true, html: '<div class="filter-box"><button class="pill">最新</button></div>' };
+    }
+    return origSend(id, msg);
+  };
+
+  const llm = makeLlm();
+  llm.planGoalRemediation = async (goal, evidence) => {
+    planCalls++;
+    if (planCalls === 1) {
+      return {
+        diagnosis: '未展开浮层，先点击筛选',
+        nextAction: { action: 'CLICK', selector: ['.filter-trigger'] },
+        achieved: false,
+      };
+    } else {
+      return {
+        diagnosis: '已展开浮层，点击最新胶囊',
+        nextAction: { action: 'HOVER_CLICK', selector: ['.pill'] },
+        achieved: false,
+        rulePatch: {
+          sortTabs: { time_descending: ['.pill'] },
+        },
+      };
+    }
+  };
+
+  const { scraper, storage } = makeScraper({ tabs, llm });
+  const task = baseTask('task_goal_loop', {
+    config: { notesLimit: 1, sortType: 'time_descending' },
+  });
+  await storage.saveTask(task);
+  await scraper.run(task);
+
+  assert.equal(planCalls, 2, '应当进行 2 轮 AI 规划研判');
+  assert.equal(contractStatus, true, '最终应当达成目标契约');
+
+  // 验证任务进度中记录了 remediationState 及其自愈流水
+  const updatedTask = await storage.getTask('task_goal_loop');
+  const remState = updatedTask.progress.remediationState;
+  assert.ok(remState, '任务进度中应记录 remediationState');
+  assert.equal(remState.history.length, 2, '历史记录应包含两轮决策证据与执行状态');
+  assert.equal(remState.history[0].diagnosis, '未展开浮层，先点击筛选');
+  assert.equal(remState.history[1].achieved, true, '第二轮决策后达成契约');
+
+  // 验证规则动态沉淀
+  const dynamicRules = await storage.getConfig('dynamic_site_patterns');
+  assert.deepEqual(dynamicRules.search.sortTabs.time_descending, ['.pill']);
+});
+
+
 
 
 

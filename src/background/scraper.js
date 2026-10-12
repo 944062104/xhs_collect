@@ -353,6 +353,185 @@ export class Scraper {
     // ok:false → 未出现登录弹窗，正常继续
   }
 
+  // ---- 目标导向自愈循环 (Goal Remediation Loop, 借鉴 web-access 交互理念) ----
+  // 核心思想：先定义目标契约（Goal Contract），观测现场 DOM 证据，边看边调整、证据驱动，直到任务真正做完为止。
+  async _runGoalRemediationLoop(task, tabId, goal, maxRounds = 4) {
+    if (!task.progress.remediationState) {
+      task.progress.remediationState = {
+        history: [],
+        currentPlan: null,
+      };
+    }
+
+    const state = task.progress.remediationState;
+
+    // 1. 初次静默检查契约是否已达成（例如 URL 参数生效或默认已是该状态）
+    let contractCheck = await this._send(tabId, { action: 'checkGoalContract', goal }).catch(() => null);
+    if (contractCheck && contractCheck.achieved) {
+      return { achieved: true, rounds: 0 };
+    }
+
+    // 2. 若未达成，优先执行内置的经典交互尝试（例如先点一次筛选或排序按钮）
+    if (goal.type === 'search_sort' && goal.sortType) {
+      try {
+        const directRes = await this._send(tabId, {
+          action: 'setSearchSort',
+          sortType: goal.sortType,
+          timeout: 4000,
+        }).catch(() => null);
+        if (directRes && directRes.ok && directRes.active !== false) {
+          contractCheck = await this._send(tabId, { action: 'checkGoalContract', goal }).catch(() => null);
+          if (contractCheck && contractCheck.achieved) {
+            return { achieved: true, rounds: 1 };
+          }
+        }
+      } catch (_) {}
+    }
+
+    // 3. 仍未满足契约，进入多轮 AI 规划与自愈执行循环
+    let round = 0;
+    while (round < maxRounds) {
+      round++;
+      this._throwIfCancelled(task.id);
+
+      // 获取现场 DOM 骨架证据
+      const regionResp = await this._send(tabId, { action: 'getInteractiveRegionHtml' }).catch(() => null);
+      const regionHtml = regionResp?.html || '';
+
+      const evidence = {
+        url: contractCheck?.url || '',
+        currentActive: contractCheck?.currentActive || '',
+        regionHtml: regionHtml,
+        history: state.history,
+      };
+
+      let planResult = null;
+      if (this.llm && typeof this.llm.planGoalRemediation === 'function') {
+        try {
+          task.progress.stepMessage = `目标未达成，AI 正在进行第 ${round} 轮现场研判与路径规划...`;
+          await this.taskManager.saveProgress(task, { stepMessage: task.progress.stepMessage });
+          planResult = await this.llm.planGoalRemediation(goal, evidence);
+        } catch (llmErr) {
+          // LLM 错误记录并根据情况重试
+          state.history.push({
+            round,
+            action: 'LLM_ERROR',
+            error: String(llmErr?.message || llmErr),
+            time: Date.now(),
+          });
+          continue;
+        }
+      } else if (this.llm && typeof this.llm.learnSearchSortRegion === 'function' && goal.type === 'search_sort') {
+        // 兼容旧接口 mock
+        const oldLearned = await this.llm.learnSearchSortRegion(regionHtml, goal.sortType, '');
+        if (oldLearned) {
+          planResult = {
+            diagnosis: oldLearned.reason || '已调整规则',
+            nextAction: { action: 'CLICK', selector: oldLearned.sortOption || [] },
+            achieved: false,
+            rulePatch: {
+              sortRegion: oldLearned.regionSelector,
+              filterButton: oldLearned.filterButton,
+              sortTabs: { [goal.sortType]: oldLearned.sortOption },
+            },
+          };
+        }
+      }
+
+      if (!planResult) break;
+
+      state.currentPlan = planResult;
+      const nextAction = planResult.nextAction || {};
+
+      if (nextAction.action === 'UNRECOVERABLE') {
+        state.history.push({
+          round,
+          action: 'UNRECOVERABLE',
+          reason: nextAction.reason,
+          time: Date.now(),
+        });
+        break;
+      }
+
+      // 执行规划的原子动作
+      let execRes = null;
+      if (nextAction.action === 'WAIT') {
+        await this.sleep(nextAction.duration || 1000, task.id);
+        execRes = { ok: true, executed: true };
+      } else if (nextAction.selector && (nextAction.action === 'CLICK' || nextAction.action === 'HOVER_CLICK')) {
+        task.progress.stepMessage = `AI 执行动作: ${nextAction.action} (${planResult.diagnosis || '调整规则'})...`;
+        await this.taskManager.saveProgress(task, { stepMessage: task.progress.stepMessage });
+
+        // 优先派发执行 LLM 规划的特定原子动作（如点击指定 selector）
+        execRes = await this._send(tabId, {
+          action: 'executeActionRecipe',
+          recipe: nextAction,
+        }).catch((err) => ({ ok: false, error: String(err) }));
+
+        // 若存在针对排序的规则补丁（如区域+胶囊），额外同步派发 setSearchSort 更新视图
+        if (goal.type === 'search_sort' && planResult.rulePatch) {
+          const sortRes = await this._send(tabId, {
+            action: 'setSearchSort',
+            sortType: goal.sortType,
+            regionSelector: planResult.rulePatch?.sortRegion,
+            filterButton: planResult.rulePatch?.filterButton,
+            sortOption: nextAction.selector,
+            timeout: 4000,
+          }).catch(() => null);
+          if (sortRes) execRes = sortRes;
+        }
+      }
+
+      // 再次检查目标契约达成状态
+      await this.sleep(800, task.id);
+      contractCheck = await this._send(tabId, { action: 'checkGoalContract', goal }).catch(() => null);
+      let isAchieved = false;
+      if (contractCheck && typeof contractCheck.achieved === 'boolean') {
+        isAchieved = contractCheck.achieved;
+      } else if (execRes && execRes.ok) {
+        isAchieved = execRes.active !== false;
+      }
+
+      state.history.push({
+        round,
+        diagnosis: planResult.diagnosis,
+        action: nextAction.action,
+        selector: nextAction.selector,
+        executed: Boolean(execRes && execRes.ok),
+        achieved: isAchieved,
+        time: Date.now(),
+      });
+
+      await this.taskManager.saveProgress(task, {
+        remediationState: state,
+        stepMessage: isAchieved ? 'AI 成功达成目标契约！' : `第 ${round} 轮尝试完成，继续校验...`,
+      });
+
+      if (isAchieved) {
+        // 成功达成契约：沉淀经验到 dynamic_site_patterns
+        if (planResult.rulePatch && this.storage) {
+          try {
+            const dynamicPatterns = (await this.storage.getConfig('dynamic_site_patterns')) || {};
+            dynamicPatterns.search = dynamicPatterns.search || {};
+            if (planResult.rulePatch.sortRegion) dynamicPatterns.search.sortRegion = planResult.rulePatch.sortRegion;
+            if (planResult.rulePatch.filterButton) dynamicPatterns.search.filterButton = planResult.rulePatch.filterButton;
+            if (planResult.rulePatch.sortTabs) {
+              dynamicPatterns.search.sortTabs = dynamicPatterns.search.sortTabs || {};
+              Object.assign(dynamicPatterns.search.sortTabs, planResult.rulePatch.sortTabs);
+            }
+            await this.storage.saveConfig('dynamic_site_patterns', dynamicPatterns);
+            if (typeof this._mergeDynamicPatterns === 'function') {
+              this._mergeDynamicPatterns(dynamicPatterns);
+            }
+          } catch (_) {}
+        }
+        return { achieved: true, rounds: round, learnedPatterns: planResult.rulePatch };
+      }
+    }
+
+    return { achieved: false, rounds: round };
+  }
+
   // ---- 搜索阶段 ----------------------------------------------------------
 
   async _searchPhase(task) {
@@ -381,112 +560,48 @@ export class Scraper {
         timeout: 10000,
       });
 
-      // 2. 双重保障与闭环自愈：在页面中模拟点击对应的排序标签（如“最新”、“最多点赞”）
+      // 2. 双重保障与目标驱动自愈循环（借鉴 web-access 交互理念）：
+      // 先检查目标契约是否满足，若未满足则结合现场 DOM 证据持续观测、决策并执行，直到目标做完为止
       if (sortType && sortType !== 'general') {
-        try {
-          this._throwIfCancelled(task.id);
-          const sortLabelMap = {
-            time_descending: '最新发布',
-            popularity_descending: '最多点赞',
-            comments_descending: '最多评论',
-          };
-          const sortLabel = sortLabelMap[sortType] || sortType;
-          task.progress.stepMessage = `正在切换排序为“${sortLabel}”...`;
+        const sortLabelMap = {
+          time_descending: '最新发布',
+          popularity_descending: '最多点赞',
+          comments_descending: '最多评论',
+        };
+        const sortLabel = sortLabelMap[sortType] || sortType;
+        const targetNames = sortType === 'time_descending'
+          ? ['最新', '最新发布']
+          : (sortType === 'popularity_descending' ? ['最多点赞', '最热'] : ['最多评论']);
+
+        const goal = {
+          type: 'search_sort',
+          targetLabel: sortLabel,
+          targetNames: targetNames,
+          sortType: sortType,
+        };
+
+        const remediationResult = await this._runGoalRemediationLoop(task, tabId, goal);
+
+        if (remediationResult.achieved) {
+          task.progress.stepMessage = `已成功切换为“${sortLabel}”，正在加载数据...`;
           await this.taskManager.saveProgress(task, { stepMessage: task.progress.stepMessage });
-
-          // 步骤 1：先执行
-          let sortRes = await this._send(tabId, {
-            action: 'setSearchSort',
-            sortType,
-            timeout: 5000,
-          }).catch(() => null);
-
-          // 步骤 2：判断有没有成功 (若返回 active: false 或 ok: false 则判定未生效)
-          let isSuccess = Boolean(sortRes && sortRes.ok && sortRes.active !== false);
-
-          // 步骤 3：如果失败或未激活，进入闭环多轮自学习与验证流程（学习 -> 验证 -> 失败带反馈重学 -> 再验证）
-          const MAX_LEARN_ROUNDS = 2;
-          let round = 0;
-          let lastFailedRule = null;
-
-          while (!isSuccess && round < MAX_LEARN_ROUNDS && this.llm && typeof this.llm.learnSearchSortRegion === 'function') {
-            round++;
-            try {
-              task.progress.stepMessage = `排序未生效，正在进行第 ${round} 轮 AI 区域定位与自学习...`;
-              await this.taskManager.saveProgress(task, { stepMessage: task.progress.stepMessage });
-
-              // 抓取顶部交互控制区域 HTML 骨架（content-script 会确保展开浮层后再抓取）
-              const regionResp = await this._send(tabId, { action: 'getInteractiveRegionHtml' }).catch(() => null);
-              const regionHtml = regionResp?.html || '';
-
-              if (regionHtml && regionHtml.length > 30) {
-                const feedback = lastFailedRule
-                  ? `上一轮尝试的规则 ${JSON.stringify(lastFailedRule)} 点击后未检测到 active 激活态，请重新定位容器与胶囊。`
-                  : '';
-                const learned = await this.llm.learnSearchSortRegion(regionHtml, sortType, feedback);
-
-                if (learned && (learned.regionSelector?.length > 0 || learned.sortOption?.length > 0 || learned.filterButton?.length > 0)) {
-                  lastFailedRule = { region: learned.regionSelector, sort: learned.sortOption };
-                  task.progress.stepMessage = `第 ${round} 轮 AI 学习完成 (${learned.reason || '已调整规则'})，正在验证执行...`;
-                  await this.taskManager.saveProgress(task, { stepMessage: task.progress.stepMessage });
-
-                  // 动态保存与热重载规则
-                  const dynamicPatterns = (await this.storage?.getConfig('dynamic_site_patterns')) || {};
-                  dynamicPatterns.search = dynamicPatterns.search || {};
-                  if (learned.regionSelector?.length) dynamicPatterns.search.sortRegion = learned.regionSelector;
-                  if (learned.filterButton?.length) dynamicPatterns.search.filterButton = learned.filterButton;
-                  if (learned.sortOption?.length) {
-                    dynamicPatterns.search.sortTabs = dynamicPatterns.search.sortTabs || {};
-                    dynamicPatterns.search.sortTabs[sortType] = learned.sortOption;
-                  }
-                  await this.storage?.saveConfig('dynamic_site_patterns', dynamicPatterns);
-                  if (typeof this._mergeDynamicPatterns === 'function') {
-                    this._mergeDynamicPatterns(dynamicPatterns);
-                  }
-
-                  // 再次执行
-                  sortRes = await this._send(tabId, {
-                    action: 'setSearchSort',
-                    sortType,
-                    regionSelector: learned.regionSelector,
-                    filterButton: learned.filterButton,
-                    sortOption: learned.sortOption,
-                    timeout: 5000,
-                  }).catch(() => null);
-
-                  // 再次严格验证判断
-                  isSuccess = Boolean(sortRes && sortRes.ok && sortRes.active !== false);
-                }
-              }
-            } catch (_) {
-              // 自学异常降级处理
+          await this.sleep(3000, task.id);
+        } else {
+          // 降级兜底：尝试使用 site-patterns 中的选择器点击
+          let fallbackClicked = false;
+          const sortSelectors = this._sel(`search.sortTabs.${sortType}`);
+          if (sortSelectors && sortSelectors.length > 0) {
+            const clickRes = await this._send(tabId, { action: 'click', selectors: sortSelectors }).catch(() => null);
+            if (clickRes && clickRes.ok) {
+              fallbackClicked = true;
+              await this.sleep(2500, task.id);
             }
           }
-
-          if (isSuccess) {
-            task.progress.stepMessage = `已成功切换为“${sortLabel}”，正在加载数据...`;
+          if (!fallbackClicked) {
+            task.progress.stepMessage = `⚠️ 页面排序未成功切换（已自动降级按当前内容采集）...`;
             await this.taskManager.saveProgress(task, { stepMessage: task.progress.stepMessage });
-            // 切换排序后小红书瀑布流会异步拉取新数据，等待 3 秒确保新排序卡片渲染完成
-            await this.sleep(3000, task.id);
-          } else {
-            // 降级兜底：尝试使用 site-patterns 中的选择器点击
-            let fallbackClicked = false;
-            const sortSelectors = this._sel(`search.sortTabs.${sortType}`);
-            if (sortSelectors && sortSelectors.length > 0) {
-              const clickRes = await this._send(tabId, { action: 'click', selectors: sortSelectors }).catch(() => null);
-              if (clickRes && clickRes.ok) {
-                fallbackClicked = true;
-                await this.sleep(2500, task.id);
-              }
-            }
-            if (!fallbackClicked) {
-              task.progress.stepMessage = `⚠️ 页面排序未成功切换（已自动降级按当前内容采集）...`;
-              await this.taskManager.saveProgress(task, { stepMessage: task.progress.stepMessage });
-              await this.sleep(1500, task.id);
-            }
+            await this.sleep(1500, task.id);
           }
-        } catch (_) {
-          // 排序切换失败不阻断采集，继续按页面当前内容进行
         }
       }
 
