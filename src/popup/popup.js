@@ -22,6 +22,9 @@ function buildStartMessage(keyword, opts = {}) {
   const format = opts.format === 'csv' ? 'csv' : 'json';
   const crawlDelay = typeof opts.crawlDelay === 'number' ? opts.crawlDelay : 0;
   const sortType = opts.sortType || 'general';
+  const noteType = opts.noteType || 'all';
+  const publishTime = opts.publishTime || 'all';
+  const thresholds = opts.thresholds || {};
   const forceAiRemediation = Boolean(opts.forceAiRemediation);
   return {
     type: 'START_TASK',
@@ -32,6 +35,9 @@ function buildStartMessage(keyword, opts = {}) {
       outputFormat: format,
       crawlDelay,
       sortType,
+      noteType,
+      publishTime,
+      thresholds,
       forceAiRemediation,
     },
   };
@@ -222,10 +228,12 @@ function formatDetailStatus(resp) {
     return `${label} · ${step}`;
   }
   const count = resp.notesCount ?? resp.progress?.notesCollected ?? 0;
+  const skipped = resp.progress?.skippedThresholdCount ?? 0;
+  const skipText = skipped > 0 ? `，过滤跳过 ${skipped} 篇` : '';
   if (resp.status === 'completed') {
-    return `${label}（共采集 ${count} 篇）`;
+    return `${label}（共采集 ${count} 篇${skipText}）`;
   }
-  return `${label}（已采集 ${count} 篇）`;
+  return `${label}（已采集 ${count} 篇${skipText}）`;
 }
 
 // 生成单条笔记预览条目的 HTML 片段
@@ -419,6 +427,13 @@ function initPopup() {
     deleteSelectedBtn: $('deleteSelectedBtn'),
     advancedToggle: $('advancedToggle'),
     advancedPanel: $('advancedPanel'),
+    sortType: $('sortType'),
+    noteType: $('noteType'),
+    publishTime: $('publishTime'),
+    minLikes: $('minLikes'),
+    minCollects: $('minCollects'),
+    minComments: $('minComments'),
+    minDatePreset: $('minDatePreset'),
     apiBase: $('apiBase'),
     model: $('model'),
     apiKey: $('apiKey'),
@@ -464,12 +479,22 @@ function initPopup() {
 
   function loadConfig() {
     if (!chrome || !chrome.storage || !chrome.storage.local) return;
-    chrome.storage.local.get(['apiBase', 'model', 'apiKey', 'protocol', 'comments', 'commentsDepth', 'crawlDelay', 'limit', 'sortType', 'forceAiRemediation'], (cfg) => {
+    chrome.storage.local.get([
+      'apiBase', 'model', 'apiKey', 'protocol', 'comments', 'commentsDepth',
+      'crawlDelay', 'limit', 'sortType', 'noteType', 'publishTime',
+      'minLikes', 'minCollects', 'minComments', 'minDatePreset', 'forceAiRemediation'
+    ], (cfg) => {
       if (cfg.apiBase && els.apiBase) els.apiBase.value = cfg.apiBase;
       if (cfg.model && els.model) els.model.value = cfg.model;
       if (cfg.apiKey && els.apiKey) els.apiKey.value = cfg.apiKey;
       if (cfg.protocol && els.protocol) els.protocol.value = cfg.protocol;
       if (cfg.sortType && els.sortType) els.sortType.value = cfg.sortType;
+      if (cfg.noteType && els.noteType) els.noteType.value = cfg.noteType;
+      if (cfg.publishTime && els.publishTime) els.publishTime.value = cfg.publishTime;
+      if (cfg.minLikes && els.minLikes) els.minLikes.value = cfg.minLikes;
+      if (cfg.minCollects && els.minCollects) els.minCollects.value = cfg.minCollects;
+      if (cfg.minComments && els.minComments) els.minComments.value = cfg.minComments;
+      if (cfg.minDatePreset && els.minDatePreset) els.minDatePreset.value = cfg.minDatePreset;
       if (els.forceAiRemediation) {
         els.forceAiRemediation.checked = Boolean(cfg.forceAiRemediation);
       }
@@ -509,6 +534,12 @@ function initPopup() {
         crawlDelay,
         limit: els.limit ? Number(els.limit.value) || 20 : 20,
         sortType: els.sortType ? els.sortType.value : 'general',
+        noteType: els.noteType ? els.noteType.value : 'all',
+        publishTime: els.publishTime ? els.publishTime.value : 'all',
+        minLikes: els.minLikes ? els.minLikes.value.trim() : '',
+        minCollects: els.minCollects ? els.minCollects.value.trim() : '',
+        minComments: els.minComments ? els.minComments.value.trim() : '',
+        minDatePreset: els.minDatePreset ? els.minDatePreset.value : '0',
         forceAiRemediation: els.forceAiRemediation ? els.forceAiRemediation.checked : false,
       },
       () => showSaveHint()
@@ -721,6 +752,21 @@ function initPopup() {
       return;
     }
     const depth = els.commentsDepth ? Number(els.commentsDepth.value) : (els.comments && els.comments.checked ? 20 : 0);
+    const minLikes = els.minLikes && els.minLikes.value ? Number(els.minLikes.value) : 0;
+    const minCollects = els.minCollects && els.minCollects.value ? Number(els.minCollects.value) : 0;
+    const minComments = els.minComments && els.minComments.value ? Number(els.minComments.value) : 0;
+    const minDatePreset = els.minDatePreset ? Number(els.minDatePreset.value) : 0;
+    let minDate = 0;
+    if (minDatePreset > 0) {
+      minDate = Date.now() - minDatePreset * 86400 * 1000;
+    }
+
+    const thresholds = {};
+    if (minLikes > 0) thresholds.minLikes = minLikes;
+    if (minCollects > 0) thresholds.minCollects = minCollects;
+    if (minComments > 0) thresholds.minComments = minComments;
+    if (minDate > 0) thresholds.minDate = minDate;
+
     const msg = buildStartMessage(keyword, {
       limit: Number(els.limit.value) || 20,
       comments: depth > 0,
@@ -728,6 +774,9 @@ function initPopup() {
       format: 'json',
       crawlDelay: Number(els.delay.value) || 0,
       sortType: els.sortType ? els.sortType.value : 'general',
+      noteType: els.noteType ? els.noteType.value : 'all',
+      publishTime: els.publishTime ? els.publishTime.value : 'all',
+      thresholds,
       forceAiRemediation: els.forceAiRemediation ? els.forceAiRemediation.checked : false,
     });
     chrome.runtime.sendMessage(msg, (resp) => {
@@ -1064,6 +1113,12 @@ function initPopup() {
   if (els.apiKey) els.apiKey.addEventListener('change', saveConfig);
   if (els.limit) els.limit.addEventListener('change', saveConfig);
   if (els.sortType) els.sortType.addEventListener('change', saveConfig);
+  if (els.noteType) els.noteType.addEventListener('change', saveConfig);
+  if (els.publishTime) els.publishTime.addEventListener('change', saveConfig);
+  if (els.minLikes) els.minLikes.addEventListener('change', saveConfig);
+  if (els.minCollects) els.minCollects.addEventListener('change', saveConfig);
+  if (els.minComments) els.minComments.addEventListener('change', saveConfig);
+  if (els.minDatePreset) els.minDatePreset.addEventListener('change', saveConfig);
 
   if (els.delay) {
     els.delay.addEventListener('change', () => {
@@ -1086,13 +1141,22 @@ function initPopup() {
   if (els.resetBtn) {
     els.resetBtn.addEventListener('click', () => {
       if (chrome && chrome.storage && chrome.storage.local) {
-        chrome.storage.local.remove(['apiBase', 'model', 'apiKey', 'comments', 'crawlDelay', 'limit', 'sortType'], () => {
+        chrome.storage.local.remove([
+          'apiBase', 'model', 'apiKey', 'comments', 'crawlDelay', 'limit', 'sortType',
+          'noteType', 'publishTime', 'minLikes', 'minCollects', 'minComments', 'minDatePreset'
+        ], () => {
           if (els.apiBase) els.apiBase.value = '';
           if (els.model) els.model.value = '';
           if (els.apiKey) els.apiKey.value = '';
           if (els.comments) els.comments.checked = false;
           if (els.delay) els.delay.value = '0';
           if (els.sortType) els.sortType.value = 'general';
+          if (els.noteType) els.noteType.value = 'all';
+          if (els.publishTime) els.publishTime.value = 'all';
+          if (els.minLikes) els.minLikes.value = '';
+          if (els.minCollects) els.minCollects.value = '';
+          if (els.minComments) els.minComments.value = '';
+          if (els.minDatePreset) els.minDatePreset.value = '0';
           chrome.runtime.sendMessage({ type: 'RESET_DYNAMIC_PATTERNS' }, () => {});
           showSaveHint('本地配置与 AI 经验库已重置');
         });

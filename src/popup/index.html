@@ -31,10 +31,32 @@
           <span>搜索排序</span>
           <select id="sortType">
             <option value="general" selected>综合排序（默认）</option>
-            <option value="popularity_descending">最多点赞（最热）</option>
+            <option value="popularity_descending">最多点赞</option>
             <option value="time_descending">最新发布</option>
+            <option value="comments_descending">最多评论</option>
+            <option value="collects_descending">最多收藏</option>
           </select>
         </label>
+        <label class="field">
+          <span>笔记类型</span>
+          <select id="noteType">
+            <option value="all" selected>不限类型</option>
+            <option value="image">图文笔记</option>
+            <option value="video">视频笔记</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>发布时间</span>
+          <select id="publishTime">
+            <option value="all" selected>不限时间</option>
+            <option value="day">一天内</option>
+            <option value="week">一周内</option>
+            <option value="half_year">半年内</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="field-grid-2" style="margin-top:6px;">
         <label class="field">
           <span>采集数量</span>
           <select id="limit">
@@ -157,6 +179,38 @@
           <span>屏蔽原生规则（测试 AI 自学习）</span>
           <input id="forceAiRemediation" type="checkbox" />
         </label>
+
+        <div class="pattern-learner-box">
+          <div class="pattern-learner-header">🎯 <b>数据质量门槛过滤（达标才入库）</b></div>
+          <div class="pattern-learner-desc">仅采集并保存满足门槛的优质笔记，未达标笔记自动过滤跳过，留空表示不限制。</div>
+          <div class="field-grid-3" style="margin-top:6px;">
+            <label class="field">
+              <span>最小点赞</span>
+              <input id="minLikes" type="number" min="0" placeholder="如 100" />
+            </label>
+            <label class="field">
+              <span>最小收藏</span>
+              <input id="minCollects" type="number" min="0" placeholder="如 50" />
+            </label>
+            <label class="field">
+              <span>最小评论</span>
+              <input id="minComments" type="number" min="0" placeholder="如 10" />
+            </label>
+          </div>
+          <div class="field" style="margin-top:6px;">
+            <span>发布日期门槛</span>
+            <select id="minDatePreset">
+              <option value="0" selected>不限发布日期</option>
+              <option value="1">最近 1 天内</option>
+              <option value="3">最近 3 天内</option>
+              <option value="7">最近 7 天内</option>
+              <option value="30">最近 30 天内</option>
+              <option value="90">最近 3 个月内</option>
+              <option value="180">最近半年内</option>
+              <option value="365">最近 1 年内</option>
+            </select>
+          </div>
+        </div>
 
         <div class="pattern-learner-box">
           <div class="pattern-learner-header">🧠 <b>AI 规则自学习与沙箱回测</b></div>

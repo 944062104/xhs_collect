@@ -33,6 +33,9 @@ test('buildStartMessage 默认参数生成标准 START_TASK 消息', () => {
     outputFormat: 'json',
     crawlDelay: 0,
     sortType: 'general',
+    noteType: 'all',
+    publishTime: 'all',
+    thresholds: {},
     forceAiRemediation: false,
   });
 });
@@ -77,6 +80,43 @@ test('buildStartMessage 支持显式指定 commentsPerNote 评论深度', () => 
   const msg = buildStartMessage('露营', { limit: 20, commentsPerNote: 50 });
   assert.equal(msg.config.commentsPerNote, 50);
 });
+
+test('buildStartMessage 支持 noteType、publishTime 与 thresholds 门槛参数', () => {
+  const msg = buildStartMessage('滑雪', {
+    limit: 10,
+    sortType: 'popularity_descending',
+    noteType: 'video',
+    publishTime: 'week',
+    thresholds: {
+      minLikes: 500,
+      minCollects: 100,
+      minComments: 50,
+      minDate: 1700000000000,
+    },
+  });
+  assert.equal(msg.config.noteType, 'video');
+  assert.equal(msg.config.publishTime, 'week');
+  assert.deepEqual(msg.config.thresholds, {
+    minLikes: 500,
+    minCollects: 100,
+    minComments: 50,
+    minDate: 1700000000000,
+  });
+});
+
+test('formatDetailStatus 存在 skippedThresholdCount 时展示跳过统计', () => {
+  const resp = {
+    status: 'completed',
+    notesCount: 15,
+    progress: {
+      skippedThresholdCount: 8,
+    },
+  };
+  const str = formatDetailStatus(resp);
+  assert.match(str, /共采集 15 篇/);
+  assert.match(str, /过滤跳过 8 篇/);
+});
+
 
 // ---------------------------------------------------------------------------
 // progressToPercent
