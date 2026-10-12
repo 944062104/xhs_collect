@@ -712,6 +712,54 @@ test('onMessage verifySelectors：测试候选选择器并返回匹配计数与�
   assert.equal(resp.results['search.emptyField'].matchCount, 0);
 });
 
+test('onMessage verifySelectors：候选包含排序且浮层未展开时自动触发筛选展开并回测', async () => {
+  resetDoc();
+  let filterBtnClicked = false;
+
+  const realFilterBtn = makeElement('div', { textContent: ' 筛选 ', className: 'filter-btn-trigger' });
+  realFilterBtn.click = () => { filterBtnClicked = true; };
+
+  const sortLatest = makeElement('div', { textContent: '最新' });
+
+  docState.textMatches['筛选'] = realFilterBtn;
+  docState.allMatches = {
+    '.sort-latest-tab': [sortLatest],
+  };
+
+  const { response } = dispatch({
+    action: 'verifySelectors',
+    candidates: {
+      'search.sortTabs.time_descending': ['.sort-latest-tab'],
+    },
+  });
+
+  const resp = await response;
+  assert.equal(resp.ok, true);
+  assert.equal(filterBtnClicked, true, '应自动触发点击展开筛选按钮');
+  assert.equal(resp.results['search.sortTabs.time_descending'].valid, true);
+  assert.equal(resp.results['search.sortTabs.time_descending'].matchCount, 1);
+});
+
+test('onMessage verifySelectors：支持回测 XPath 与文本锚点意图规则', async () => {
+  resetDoc();
+  const el = makeElement('span', { textContent: '最新发布' });
+  docState.textMatches['最新发布'] = el;
+
+  const { response } = dispatch({
+    action: 'verifySelectors',
+    candidates: {
+      'search.sortLatest': ["//*[text()='最新发布']", '最新发布'],
+    },
+  });
+
+  const resp = await response;
+  assert.equal(resp.ok, true);
+  assert.equal(resp.results['search.sortLatest'].valid, true);
+  assert.equal(resp.results['search.sortLatest'].matchCount >= 1, true);
+  assert.equal(resp.results['search.sortLatest'].sampleText, '最新发布');
+});
+
+
 
 
 

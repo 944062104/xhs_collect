@@ -152,6 +152,34 @@ const SYSTEM_NOTE_COMMENTS = `你是一个小红书网页数据提取器。用�
 - publishedAt：发布时间（字符串，尽量保留原文）
 不要输出代码围栏或任何解释文字，只输出可被 JSON.parse 解析的纯 JSON。`;
 
+const SYSTEM_PATTERN_LEARNER = `你是一个专业的 Web 自动化爬虫专家。用户会提供一段小红书网页 HTML 片段（已清洗无用脚本与样式）。
+请根据 HTML 结构分析定位关键业务意图元素的稳健选择器（优先简洁稳健的 CSS 类包含选择器、属性选择器或 XPath 文本匹配）。
+我们关心的核心意图包括：
+1. 筛选入口（filterButton）：打开搜索筛选面板的按钮/图标；
+2. 排序选项（sortTabs）：
+   - popularity_descending: “最多点赞”或“最热”
+   - time_descending: “最新发布”或“最新”
+3. 笔记卡片（noteLink / noteCard）：搜索结果列表中的笔记卡片或链接；
+4. 笔记详情（noteDetail）：标题（title）、正文（content）、评论区容器（commentSection）。
+
+只输出纯 JSON 对象，每个意图对应一个选择器字符串数组。支持扁平键名或嵌套结构，示例格式：
+{
+  "search": {
+    "filterButton": ["button.filter-btn", "//button[contains(., '筛选')]"],
+    "sortTabs": {
+      "time_descending": ["//div[text()='最新']", ".sort-item-latest"],
+      "popularity_descending": ["//div[text()='最多点赞']"]
+    },
+    "noteLink": ["a[href*='/explore/']", ".note-item"]
+  },
+  "noteDetail": {
+    "title": ["#detail-title", "[class*='title']"],
+    "content": ["#detail-desc", "[class*='desc']"],
+    "commentSection": [".comments-container"]
+  }
+}
+要求：每个字段的值必须是非空字符串数组。不要输出代码围栏或任何多余解释文字，只输出纯 JSON。`;
+
 const STRICT_RETRY_NOTE = '\n\n【重试】严格要求：仅输出纯 JSON，禁止使用代码围栏、不要添加任何解释文字。';
 
 // ----------------------------------------------------------------------------
@@ -249,13 +277,16 @@ export class LLMClient {
     if (this.protocol === 'openai' && (!this.model || this.model === DEFAULT_MODEL)) {
       this.model = 'gpt-4o-mini';
     }
+
+    this.maxRetries = typeof opts === 'object' && typeof opts.maxRetries === 'number' ? opts.maxRetries : 2;
   }
 
   // 调用大模型 API（支持 Anthropic 与 OpenAI 兼容协议），返回文本字符串。
+  // 内置网络故障与超时重试机制（默认重试 2 次，指数退避），对齐 Spec §9.1。
   async _callApi(systemPrompt, userPrompt) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-    let res;
+    const timeout = this._timeoutMs ?? REQUEST_TIMEOUT_MS;
+    const retryDelay = this._retryDelayMs ?? 2000;
+    const maxRetries = typeof this.maxRetries === 'number' ? this.maxRetries : 2;
 
     const headers = {
       'content-type': 'application/json',
@@ -283,53 +314,81 @@ export class LLMClient {
       };
     }
 
-    try {
-      res = await fetch(this.apiUrl, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(bodyObj),
-        signal: controller.signal,
-      });
-    } catch (networkErr) {
-      throw new Error(`LLM API 网络请求失败：${networkErr?.message || networkErr}`);
-    } finally {
-      clearTimeout(timer);
-    }
+    let lastErr;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      const controller = new AbortController();
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, timeout);
 
-    if (!res.ok) {
-      let detail = '';
+      let res;
       try {
-        const errBody = await res.json();
-        if (errBody?.error?.message) detail = `: ${errBody.error.message}`;
-        else if (typeof errBody?.error === 'string') detail = `: ${errBody.error}`;
-        else if (errBody?.message) detail = `: ${errBody.message}`;
-      } catch {
-        /* 响应体非 JSON，忽略 */
+        res = await fetch(this.apiUrl, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(bodyObj),
+          signal: controller.signal,
+        });
+      } catch (networkErr) {
+        if (timedOut) {
+          lastErr = new Error(`LLM API 请求超时：超过 ${Math.round(timeout / 1000)} 秒无响应（请检查网络代理或更换模型）`);
+        } else {
+          lastErr = new Error(`LLM API 网络请求失败：${networkErr?.message || networkErr}`);
+        }
+        if (attempt < maxRetries) {
+          await new Promise((r) => setTimeout(r, retryDelay * (attempt + 1)));
+          continue;
+        }
+        throw lastErr;
+      } finally {
+        clearTimeout(timer);
       }
-      throw new Error(`LLM API 请求失败：HTTP ${res.status}${detail}`);
-    }
 
-    const data = await res.json();
+      if (!res.ok) {
+        let detail = '';
+        try {
+          const errBody = await res.json();
+          if (errBody?.error?.message) detail = `: ${errBody.error.message}`;
+          else if (typeof errBody?.error === 'string') detail = `: ${errBody.error}`;
+          else if (errBody?.message) detail = `: ${errBody.message}`;
+        } catch {
+          /* 响应体非 JSON，忽略 */
+        }
 
-    // 提取响应文本
-    if (this.protocol === 'openai') {
-      const choice = data?.choices?.[0];
-      const text = choice?.message?.content;
+        // HTTP 5xx 故障可重试；4xx 客户端错误（如 401 密钥失效、429 频控、400 格式错误）立即失败
+        if (res.status >= 500 && attempt < maxRetries) {
+          lastErr = new Error(`LLM API 请求失败：HTTP ${res.status}${detail}`);
+          await new Promise((r) => setTimeout(r, retryDelay * (attempt + 1)));
+          continue;
+        }
+        throw new Error(`LLM API 请求失败：HTTP ${res.status}${detail}`);
+      }
+
+      const data = await res.json();
+
+      // 提取响应文本
+      if (this.protocol === 'openai') {
+        const choice = data?.choices?.[0];
+        const text = choice?.message?.content;
+        if (typeof text !== 'string') {
+          throw new Error('OpenAI 兼容 API 返回格式异常：缺少 choices[0].message.content');
+        }
+        return text;
+      }
+
+      // Anthropic 格式
+      const textBlock = Array.isArray(data?.content)
+        ? data.content.find((b) => b?.type === 'text')
+        : null;
+      const text = textBlock?.text;
       if (typeof text !== 'string') {
-        throw new Error('OpenAI 兼容 API 返回格式异常：缺少 choices[0].message.content');
+        throw new Error('Anthropic API 返回格式异常：缺少文本类型的 content 块');
       }
       return text;
     }
-
-    // Anthropic 格式
-    const textBlock = Array.isArray(data?.content)
-      ? data.content.find((b) => b?.type === 'text')
-      : null;
-    const text = textBlock?.text;
-    if (typeof text !== 'string') {
-      throw new Error('Anthropic API 返回格式异常：缺少文本类型的 content 块');
-    }
-    return text;
+    throw lastErr;
   }
 
   // 调 API + 解析 JSON。仅当 API 调用【成功】但 JSON 解析失败时，
@@ -394,6 +453,17 @@ export class LLMClient {
       likes: it?.likes ?? 0,
       publishedAt: it?.publishedAt ?? '',
     }));
+  }
+
+  // 规则学习/自愈（借鉴 web-access 思想）：分析 HTML 片段并生成定位选择器
+  async learnSitePatterns(htmlSnippet, targetType = 'all') {
+    const cleaned = cleanHtml(htmlSnippet);
+    const prompt = this._buildPrompt(`请分析当前页面的 HTML 片段并提取出${targetType}相关元素的稳定选择器规则。`, cleaned);
+    const data = await this._extract(SYSTEM_PATTERN_LEARNER, prompt);
+    if (!data || typeof data !== 'object') {
+      throw new Error('learnSitePatterns 预期返回对象');
+    }
+    return data;
   }
 
   // 测试连接：发送轻量请求验证 API Key / URL / 模型可用性

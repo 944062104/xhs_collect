@@ -327,7 +327,7 @@ test('HTTP 错误（含 error body）立即抛出且不重试', async () => {
   }
 });
 
-test('网络错误立即抛出且不重试', async () => {
+test('网络错误在重试达到上限后抛出且不进入 JSON 换 prompt 分支', async () => {
   let calls = 0;
   installFetch(() => {
     calls += 1;
@@ -335,8 +335,9 @@ test('网络错误立即抛出且不重试', async () => {
   });
   try {
     const client = new LLMClient('sk-test');
+    client._retryDelayMs = 5;
     await assert.rejects(() => client.extractNoteList(EXAMPLE_HTML), /网络请求失败/i);
-    assert.equal(calls, 1, '网络错误不应触发重试');
+    assert.equal(calls, 3, '网络错误应重试 2 次（共调用 3 次）且不进入 JSON 换 prompt 分支');
   } finally {
     restoreFetch();
   }
@@ -388,4 +389,109 @@ test('testConnection：API 抛错时返回 ok: false 与错误说明', async () 
     restoreFetch();
   }
 });
+
+test('LLMClient._callApi 遇到网络故障时自动重试 2 次直至成功', async () => {
+  let attempts = 0;
+  installFetch(() => {
+    attempts++;
+    if (attempts < 3) throw new Error('Failed to fetch');
+    return jsonResponse({
+      content: [{ type: 'text', text: '{"title":"ok"}' }],
+    });
+  });
+  try {
+    const client = new LLMClient('sk-test');
+    client._retryDelayMs = 10; // 测试中快速重试
+    const res = await client._callApi('sys', 'user');
+    assert.equal(attempts, 3, '应重试 2 次（共调用 3 次）');
+    assert.ok(res.includes('ok'));
+  } finally {
+    restoreFetch();
+  }
+});
+
+test('LLMClient._callApi 超时后抛出包含“超时”而非“The user aborted a request”的友好错误', async () => {
+  installFetch((_url, opts) => {
+    return new Promise((_resolve, reject) => {
+      opts?.signal?.addEventListener('abort', () => {
+        const err = new Error('The user aborted a request.');
+        err.name = 'AbortError';
+        reject(err);
+      });
+    });
+  });
+  try {
+    const client = new LLMClient('sk-test');
+    client._timeoutMs = 20; // 快速超时
+    client._retryDelayMs = 5;
+    await assert.rejects(
+      async () => client._callApi('sys', 'user'),
+      /LLM API 请求超时/
+    );
+  } finally {
+    restoreFetch();
+  }
+});
+
+test('LLMClient.learnSitePatterns：分析页面 HTML 并提取出结构化选择器', async () => {
+  installFetch(() => {
+    return jsonResponse({
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            search: {
+              filterButton: ['.filter-btn'],
+              sortTabs: {
+                popularity_descending: ['.sort-hot'],
+                time_descending: ['.sort-latest'],
+              },
+            },
+          }),
+        },
+      ],
+    });
+  });
+  try {
+    const client = new LLMClient('sk-test');
+    const html = '<div class="filter-btn">筛选</div><div class="sort-latest">最新</div>';
+    const patterns = await client.learnSitePatterns(html, 'search');
+    assert.ok(patterns && patterns.search);
+    assert.deepEqual(patterns.search.filterButton, ['.filter-btn']);
+    assert.deepEqual(patterns.search.sortTabs.time_descending, ['.sort-latest']);
+  } finally {
+    restoreFetch();
+  }
+});
+
+test('LLMClient.learnSitePatterns：支持扁平意图键名与 XPath/语义规则，并自动兼容', async () => {
+  installFetch(() => {
+    return jsonResponse({
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            'search.filterButton': ['button.filter-btn', '//button[contains(.,"筛选")]'],
+            'search.sortTabs.time_descending': ['//div[text()="最新"]', '.sort-item-latest'],
+            'search.noteCard': ['a[href*="/explore/"]', '.note-card'],
+          }),
+        },
+      ],
+    });
+  });
+  try {
+    const client = new LLMClient('sk-test');
+    const html = '<button class="filter-btn">筛选</button><div>最新</div>';
+    const patterns = await client.learnSitePatterns(html, 'search');
+    assert.ok(patterns);
+    // 兼容扁平意图映射或嵌套解析
+    const latestRule = patterns['search.sortTabs.time_descending'] || patterns?.search?.sortTabs?.time_descending;
+    assert.ok(Array.isArray(latestRule));
+    assert.equal(latestRule.length, 2);
+    assert.equal(latestRule[0], '//div[text()="最新"]');
+  } finally {
+    restoreFetch();
+  }
+});
+
 

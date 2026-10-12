@@ -236,89 +236,206 @@ function handleScroll(msg, sendResponse) {
   return true;
 }
 
+// 判断是否为左侧/顶部分类导航栏（如 全部、图文、视频、用户）
+function isCategoryTabOrNav(el) {
+  if (!el) return false;
+  var t = (el.textContent || '').trim();
+  if (/^(全部|图文|视频|用户)$/.test(t)) return true;
+  var c = (el.className || '').toString();
+  if (/channel|tab-list|nav-tabs/.test(c)) return true;
+  if (typeof el.querySelector === 'function') {
+    var sub = el.querySelector('.tab-item, [class*="channel"], [class*="tab"]');
+    if (sub) return true;
+  }
+  // 若子项文本包含明显的多分类词汇且不含“筛选”
+  if (t.indexOf('图文') !== -1 && t.indexOf('视频') !== -1 && t.indexOf('筛选') === -1) {
+    return true;
+  }
+  return false;
+}
+
+// 查找浮层容器（通过“排序依据”精准定位，彻底杜绝误触页面左侧分类和其它元素）
+function findSortPopup() {
+  var nodes = document.querySelectorAll('div, span, p, label, section, h3, h4');
+  for (var i = 0; i < nodes.length; i++) {
+    var node = nodes[i];
+    if (!isElementVisible(node)) continue;
+    var txt = (node.textContent || '').trim();
+    if (txt === '排序依据' || txt.indexOf('排序依据') === 0) {
+      var parent = node.parentElement;
+      while (parent && parent !== document.body) {
+        if (typeof parent.querySelectorAll === 'function') {
+          var children = parent.querySelectorAll('div, span, button');
+          if (children.length >= 3) {
+            var rect = typeof parent.getBoundingClientRect === 'function' ? parent.getBoundingClientRect() : null;
+            if (!rect || rect.width < 600) {
+              return parent;
+            }
+          }
+        } else if (parent.children && parent.children.length >= 2) {
+          return parent;
+        }
+        parent = parent.parentElement;
+      }
+      return node.parentElement || node;
+    }
+  }
+  // 兼容测试与特殊 DOM：若无严格 "排序依据" 标签，尝试从 class 带 sort/filter-panel/filter-dropdown 的弹窗中找
+  var pop = document.querySelector('[class*="filter-panel"], [class*="filter-dropdown"], [class*="sort-dropdown"]');
+  if (pop && isElementVisible(pop) && !isCategoryTabOrNav(pop)) return pop;
+  return null;
+}
+
+// 查找右上角的“筛选”或“已筛选”展开按钮
+function findFilterToggleBtn() {
+  // 优先通过显式 class（排除分类容器）
+  var byClass = document.querySelector('[class*="filter-btn"], [class*="filterBtn"], [class*="filter-trigger"]');
+  if (byClass && isElementVisible(byClass) && !isCategoryTabOrNav(byClass)) return byClass;
+
+  var all = document.querySelectorAll('button, div, span, a');
+  var best = null;
+  var maxRight = 0;
+  for (var i = 0; i < all.length; i++) {
+    var el = all[i];
+    if (!isElementVisible(el)) continue;
+    if (isCategoryTabOrNav(el)) continue;
+    var txt = (el.textContent || '').trim();
+    if ((txt === '筛选' || txt === '已筛选' || (txt.indexOf('筛选') !== -1 && txt.length <= 4))) {
+      if (typeof el.getBoundingClientRect === 'function') {
+        var rect = el.getBoundingClientRect();
+        if (rect.top >= 0 && rect.top <= 250) {
+          if (rect.right > maxRight) {
+            maxRight = rect.right;
+            best = el;
+          }
+        }
+      } else {
+        best = el;
+      }
+    }
+  }
+  if (best) return best;
+
+  // 文本匹配兜底
+  var byText = findFirstElement(["//*[normalize-space(.)='筛选']", "//*[normalize-space(.)='已筛选']", "筛选"], true);
+  if (byText && !isCategoryTabOrNav(byText)) return byText;
+  return null;
+}
+
 // getHTML：返回元素 outerHTML。
 function handleGetHTML(msg, sendResponse) {
+  function proceed() {
+    var el = findFirstElement(resolveSelectors(msg));
+    if (!el) {
+      sendResponse({ ok: false, error: 'SELECTOR_NOT_FOUND' });
+      return;
+    }
+    sendResponse({ ok: true, data: el.outerHTML != null ? el.outerHTML : '' });
+  }
+
   if (msg.expandFilter && typeof findFilterToggleBtn === 'function') {
     try {
       var filterBtn = findFilterToggleBtn();
-      if (filterBtn) triggerMouseClick(filterBtn);
+      if (filterBtn) {
+        triggerMouseClick(filterBtn);
+        safeSetTimeout(proceed, 200);
+        return true;
+      }
     } catch (_) {}
   }
-  var el = findFirstElement(resolveSelectors(msg));
-  if (!el) {
-    sendResponse({ ok: false, error: 'SELECTOR_NOT_FOUND' });
-    return false;
-  }
-  sendResponse({ ok: true, data: el.outerHTML != null ? el.outerHTML : '' });
+
+  proceed();
   return false;
 }
 
 // handleVerifySelectors：在当前 DOM 中沙箱回测候选规则并采集匹配数与样本
 function handleVerifySelectors(msg, sendResponse) {
   var candidates = msg.candidates || {};
-  var results = {};
 
-  for (var key in candidates) {
-    if (!Object.prototype.hasOwnProperty.call(candidates, key)) continue;
-    var list = Array.isArray(candidates[key]) ? candidates[key] : [candidates[key]];
-    var bestCount = 0;
-    var bestSel = '';
-    var sample = '';
+  var hasSortRules = false;
+  for (var k in candidates) {
+    if (k.indexOf('sort') !== -1 || k.indexOf('filter') !== -1) {
+      hasSortRules = true;
+      break;
+    }
+  }
 
-    for (var i = 0; i < list.length; i++) {
-      var sel = String(list[i]);
-      var count = 0;
-      var firstNode = null;
+  function doVerify() {
+    var results = {};
+    for (var key in candidates) {
+      if (!Object.prototype.hasOwnProperty.call(candidates, key)) continue;
+      var list = Array.isArray(candidates[key]) ? candidates[key] : [candidates[key]];
+      var bestCount = 0;
+      var bestSel = '';
+      var sample = '';
 
-      // 1) 优先尝试 querySelectorAll
-      try {
-        if (typeof document.querySelectorAll === 'function') {
-          var nodes = document.querySelectorAll(sel);
-          if (nodes && nodes.length > 0) {
-            count = nodes.length;
-            firstNode = nodes[0];
-          }
-        }
-      } catch (_) {}
+      for (var i = 0; i < list.length; i++) {
+        var sel = String(list[i]);
+        var count = 0;
+        var firstNode = null;
 
-      // 2) 若失败，尝试 XPath
-      if (count === 0) {
+        // 1) 优先尝试 querySelectorAll
         try {
-          if (typeof document.evaluate === 'function') {
-            var xres = document.evaluate(sel, document, null, XPATH_SNAPSHOT, null);
-            if (xres && xres.snapshotLength > 0) {
-              count = xres.snapshotLength;
-              firstNode = xres.snapshotItem(0);
+          if (typeof document.querySelectorAll === 'function') {
+            var nodes = document.querySelectorAll(sel);
+            if (nodes && nodes.length > 0) {
+              count = nodes.length;
+              firstNode = nodes[0];
             }
           }
         } catch (_) {}
-      }
 
-      // 3) trySelect 兜底
-      if (count === 0) {
-        var fallbackNode = trySelect(sel);
-        if (fallbackNode) {
-          count = 1;
-          firstNode = fallbackNode;
+        // 2) 若失败，尝试 XPath
+        if (count === 0) {
+          try {
+            if (typeof document.evaluate === 'function') {
+              var xres = document.evaluate(sel, document, null, XPATH_SNAPSHOT, null);
+              if (xres && xres.snapshotLength > 0) {
+                count = xres.snapshotLength;
+                firstNode = xres.snapshotItem(0);
+              }
+            }
+          } catch (_) {}
+        }
+
+        // 3) trySelect 兜底
+        if (count === 0) {
+          var fallbackNode = trySelect(sel);
+          if (fallbackNode) {
+            count = 1;
+            firstNode = fallbackNode;
+          }
+        }
+
+        if (count > bestCount) {
+          bestCount = count;
+          bestSel = sel;
+          sample = firstNode ? (firstNode.textContent || '').trim().slice(0, 30) : '';
         }
       }
 
-      if (count > bestCount) {
-        bestCount = count;
-        bestSel = sel;
-        sample = firstNode ? (firstNode.textContent || '').trim().slice(0, 30) : '';
-      }
+      results[key] = {
+        selector: bestSel || (list[0] ? String(list[0]) : ''),
+        matchCount: bestCount,
+        sampleText: sample,
+        valid: bestCount > 0,
+      };
     }
-
-    results[key] = {
-      selector: bestSel || (list[0] ? String(list[0]) : ''),
-      matchCount: bestCount,
-      sampleText: sample,
-      valid: bestCount > 0,
-    };
+    sendResponse({ ok: true, results: results });
   }
 
-  sendResponse({ ok: true, results: results });
+  if (hasSortRules && typeof findSortPopup === 'function' && !findSortPopup()) {
+    try {
+      var btn = typeof findFilterToggleBtn === 'function' ? findFilterToggleBtn() : null;
+      if (btn) {
+        triggerMouseClick(btn);
+        safeSetTimeout(doVerify, 200);
+        return true;
+      }
+    } catch (_) {}
+  }
+
+  doVerify();
   return false;
 }
 
@@ -712,57 +829,7 @@ function handleSetSearchSort(msg, sendResponse) {
   var timeout = typeof msg.timeout === 'number' ? msg.timeout : 4000;
   var startTime = Date.now();
 
-  // 判断是否为左侧/顶部分类导航栏（如 全部、图文、视频、用户）
-  function isCategoryTabOrNav(el) {
-    if (!el) return false;
-    var t = (el.textContent || '').trim();
-    if (/^(全部|图文|视频|用户)$/.test(t)) return true;
-    var c = (el.className || '').toString();
-    if (/channel|tab-list|nav-tabs/.test(c)) return true;
-    if (typeof el.querySelector === 'function') {
-      var sub = el.querySelector('.tab-item, [class*="channel"], [class*="tab"]');
-      if (sub) return true;
-    }
-    // 若子项文本包含明显的多分类词汇且不含“筛选”
-    if (t.indexOf('图文') !== -1 && t.indexOf('视频') !== -1 && t.indexOf('筛选') === -1) {
-      return true;
-    }
-    return false;
-  }
-
-  // 1. 查找浮层容器（通过“排序依据”精准定位，彻底杜绝误触页面左侧分类和其它元素）
-  function findSortPopup() {
-    var nodes = document.querySelectorAll('div, span, p, label, section, h3, h4');
-    for (var i = 0; i < nodes.length; i++) {
-      var node = nodes[i];
-      if (!isElementVisible(node)) continue;
-      var txt = (node.textContent || '').trim();
-      if (txt === '排序依据' || txt.indexOf('排序依据') === 0) {
-        var parent = node.parentElement;
-        while (parent && parent !== document.body) {
-          if (typeof parent.querySelectorAll === 'function') {
-            var children = parent.querySelectorAll('div, span, button');
-            if (children.length >= 3) {
-              var rect = typeof parent.getBoundingClientRect === 'function' ? parent.getBoundingClientRect() : null;
-              if (!rect || rect.width < 600) {
-                return parent;
-              }
-            }
-          } else if (parent.children && parent.children.length >= 2) {
-            return parent;
-          }
-          parent = parent.parentElement;
-        }
-        return node.parentElement || node;
-      }
-    }
-    // 兼容测试与特殊 DOM：若无严格 "排序依据" 标签，尝试从 class 带 sort/filter-panel/filter-dropdown 的弹窗中找
-    var pop = document.querySelector('[class*="filter-panel"], [class*="filter-dropdown"], [class*="sort-dropdown"]');
-    if (pop && isElementVisible(pop) && !isCategoryTabOrNav(pop)) return pop;
-    return null;
-  }
-
-  // 2. 在排序浮层内查找目标胶囊选项按钮（'最新' / '最多点赞' / '综合' / '最多评论'）
+  // 在排序浮层内查找目标胶囊选项按钮（'最新' / '最多点赞' / '综合' / '最多评论'）
   function findOptionInPopup(popup) {
     if (!popup) return null;
     var candidates = [];
@@ -779,42 +846,6 @@ function handleSetSearchSort(msg, sendResponse) {
         return el;
       }
     }
-    return null;
-  }
-
-  // 3. 查找右上角的“筛选”或“已筛选”展开按钮
-  function findFilterToggleBtn() {
-    // 优先通过显式 class（排除分类容器）
-    var byClass = document.querySelector('[class*="filter-btn"], [class*="filterBtn"], [class*="filter-trigger"]');
-    if (byClass && isElementVisible(byClass) && !isCategoryTabOrNav(byClass)) return byClass;
-
-    var all = document.querySelectorAll('button, div, span, a');
-    var best = null;
-    var maxRight = 0;
-    for (var i = 0; i < all.length; i++) {
-      var el = all[i];
-      if (!isElementVisible(el)) continue;
-      if (isCategoryTabOrNav(el)) continue;
-      var txt = (el.textContent || '').trim();
-      if ((txt === '筛选' || txt === '已筛选' || (txt.indexOf('筛选') !== -1 && txt.length <= 4))) {
-        if (typeof el.getBoundingClientRect === 'function') {
-          var rect = el.getBoundingClientRect();
-          if (rect.top >= 0 && rect.top <= 250) {
-            if (rect.right > maxRight) {
-              maxRight = rect.right;
-              best = el;
-            }
-          }
-        } else {
-          best = el;
-        }
-      }
-    }
-    if (best) return best;
-
-    // 文本匹配兜底
-    var byText = findFirstElement(["//*[normalize-space(.)='筛选']", "//*[normalize-space(.)='已筛选']", "筛选"], true);
-    if (byText && !isCategoryTabOrNav(byText)) return byText;
     return null;
   }
 

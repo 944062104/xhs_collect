@@ -329,7 +329,7 @@ function renderPatternReportHtml(report) {
             <span class="pattern-key">${escapeHtml(item.key)}</span>
             <span class="pattern-badge ${badgeClass}">${badgeText}</span>
           </div>
-          <div class="pattern-selector"><code>${escapeHtml(item.selector)}</code></div>
+          <div class="pattern-selector"><code>${escapeHtml(item.selector || '(未在当前 DOM 命中可用选择器)')}</code></div>
           ${sample}
         </div>
       `.trim();

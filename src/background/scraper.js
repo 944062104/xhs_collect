@@ -80,9 +80,15 @@ export function resolveSelectors(patterns, dotKey) {
     selRoot = patterns.patterns.selectors;
   } else {
     const platformKey = Object.keys(patterns ?? {})[0];
-    selRoot = patterns?.[platformKey]?.patterns?.selectors;
+    selRoot = patterns?.[platformKey]?.patterns?.selectors || patterns?.selectors || patterns;
   }
   if (!selRoot) return [];
+
+  // 1. 优先尝试直接匹配扁平键名（如 "search.sortTabs.time_descending" 或 "search.sortLatest"）
+  if (Array.isArray(selRoot[dotKey])) return selRoot[dotKey];
+  if (typeof selRoot[dotKey] === 'string') return [selRoot[dotKey]];
+
+  // 2. 尝试标准点路径逐级下钻
   const parts = String(dotKey).split('.');
   let cur = selRoot;
   for (const p of parts) {
@@ -102,7 +108,31 @@ export class Scraper {
     this.llm = llm;
     this.patterns = patterns;
     this.tabs = tabs ?? globalThis.chrome?.tabs ?? null;
-    this.sleep = sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
+    const cancellableSleep = (ms, taskId = null) =>
+      new Promise((resolve, reject) => {
+        if (taskId && this._cancelled.has(taskId)) {
+          return reject(new ScraperCancelledError(taskId));
+        }
+        let timer = null;
+        let check = null;
+        const cleanup = () => {
+          if (timer) clearTimeout(timer);
+          if (check) clearInterval(check);
+        };
+        timer = setTimeout(() => {
+          cleanup();
+          resolve();
+        }, ms);
+        if (taskId) {
+          check = setInterval(() => {
+            if (this._cancelled.has(taskId)) {
+              cleanup();
+              reject(new ScraperCancelledError(taskId));
+            }
+          }, 80);
+        }
+      });
+    this.sleep = sleep ?? cancellableSleep;
     // 内部协作对象：状态机由 storage 派生的 TaskManager 管理（保持 DI 边界，storage 已是注入点）。
     this.taskManager = new TaskManager(storage);
     this._tabId = null; // 复用的标签页 id，避免每次导航都开新标签
@@ -118,19 +148,55 @@ export class Scraper {
 
   // ---- 模式加载 / 选择器 / URL 解析 --------------------------------------
 
-  // 浏览器环境可默认从扩展包读取 config/site-patterns.json；测试直接注入 patterns。
+  // 浏览器环境可默认从扩展包读取 config/site-patterns.json；优先合并 IndexedDB 中的动态学习经验（web-access 思想）
   async _ensurePatterns() {
-    if (this.patterns) return this.patterns;
-    const url =
-      globalThis.chrome?.runtime?.getURL &&
-      globalThis.chrome.runtime.getURL('config/site-patterns.json');
-    if (!url) {
-      throw new Error('Scraper: 未注入 patterns，且无法定位默认 site-patterns.json（请用 new Scraper({ patterns }) 注入）');
+    if (!this.patterns) {
+      const url =
+        globalThis.chrome?.runtime?.getURL &&
+        globalThis.chrome.runtime.getURL('config/site-patterns.json');
+      if (url) {
+        try {
+          const res = await fetch(url);
+          if (res.ok) this.patterns = await res.json();
+        } catch (_) {}
+      }
     }
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`加载 site-patterns.json 失败: HTTP ${res.status}`);
-    this.patterns = await res.json();
+    if (!this.patterns) {
+      this.patterns = {};
+    }
+
+    // 检查并合并 Storage 中由大模型动态学习并沉淀的经验 (Site Experience Store)
+    if (this.storage && typeof this.storage.getConfig === 'function') {
+      try {
+        const dynamicPatterns = await this.storage.getConfig('dynamic_site_patterns');
+        if (dynamicPatterns && typeof dynamicPatterns === 'object') {
+          this._mergeDynamicPatterns(dynamicPatterns);
+        }
+      } catch (_) {}
+    }
+
     return this.patterns;
+  }
+
+  // 深度合并动态规则（动态优先于静态，保留静态作为兜底）
+  _mergeDynamicPatterns(dynamic) {
+    const root = this._root();
+    if (!root || !root.patterns || !root.patterns.selectors) return;
+    const target = root.patterns.selectors;
+
+    function merge(src, dst) {
+      for (const k of Object.keys(src)) {
+        if (Array.isArray(src[k])) {
+          // 动态规则前置，原规则后置
+          const oldList = Array.isArray(dst[k]) ? dst[k] : [];
+          dst[k] = Array.from(new Set([...src[k], ...oldList]));
+        } else if (src[k] && typeof src[k] === 'object') {
+          if (!dst[k] || typeof dst[k] !== 'object') dst[k] = {};
+          merge(src[k], dst[k]);
+        }
+      }
+    }
+    merge(dynamic, target);
   }
 
   // 取得平台根对象（兼容整站文件 / 已解析平台对象两种形态）。
@@ -297,7 +363,13 @@ export class Scraper {
     for (let k = 0; k < keywords.length; k++) {
       if (task.progress.noteUrls.length >= limit) break;
       const kw = keywords[k];
-      const url = this._searchUrl(kw);
+      let url = this._searchUrl(kw);
+      const sortType = task.config?.sortType;
+      // 1. 若指定了排序规则，优先在 URL 查询参数中附加 sort（小红书最新接口支持在 URL 中直传）
+      if (sortType && sortType !== 'general') {
+        url += (url.includes('?') ? '&' : '?') + `sort=${encodeURIComponent(sortType)}`;
+      }
+
       task.progress.stepMessage = `正在打开搜索页采集关键词“${kw}”${keywords.length > 1 ? ` (${k + 1}/${keywords.length})` : ''}...`;
       await this.taskManager.saveProgress(task, { stepMessage: task.progress.stepMessage });
 
@@ -308,6 +380,33 @@ export class Scraper {
         selectors: this._sel('search.feedsContainer'),
         timeout: 10000,
       });
+
+      // 2. 双重保障：在页面中模拟点击对应的排序标签（如“最新”、“最多点赞”）
+      if (sortType && sortType !== 'general') {
+        try {
+          this._throwIfCancelled(task.id);
+          // 优先调用 content-script 内置的 setSearchSort（支持复合鼠标事件及展开延迟等待）
+          const sortRes = await this._send(tabId, {
+            action: 'setSearchSort',
+            sortType,
+            timeout: 5000,
+          }).catch(() => null);
+
+          if (sortRes && sortRes.ok) {
+            // 切换排序后小红书瀑布流会重新拉取，等待 2 秒让新列表渲染
+            await this.sleep(2000, task.id);
+          } else {
+            // 降级兜底：尝试使用 site-patterns 中的选择器点击
+            const sortSelectors = this._sel(`search.sortTabs.${sortType}`);
+            if (sortSelectors && sortSelectors.length > 0) {
+              await this._send(tabId, { action: 'click', selectors: sortSelectors }).catch(() => {});
+              await this.sleep(1500, task.id);
+            }
+          }
+        } catch (_) {
+          // 排序切换失败不阻断采集，继续按页面当前内容进行
+        }
+      }
 
       let kwScrolls = 0;
       const maxKwScrolls = Math.max(10, Math.ceil(MAX_SEARCH_SCROLLS / keywords.length));
@@ -329,6 +428,7 @@ export class Scraper {
           });
           if (linkRes && Array.isArray(linkRes.data) && linkRes.data.length > 0) {
             for (const rawUrl of linkRes.data) {
+              if (task.progress.noteUrls.length >= limit) break;
               let u = String(rawUrl).trim();
               if (u.startsWith('/')) u = 'https://www.xiaohongshu.com' + u;
               if (!task.progress.noteUrls.includes(u)) {
@@ -341,20 +441,27 @@ export class Scraper {
 
         // 2. 若 DOM 未直接命中（如特殊页面结构或测试环境），回退到 LLM 从 HTML 中提取
         if (!foundDirectly && task.progress.noteUrls.length < limit) {
-          const html = (
-            await this._send(tabId, { action: 'getHTML', selectors: this._sel('search.feedsContainer') })
-          ).data;
-          const list = await this.llm.extractNoteList(html);
-          for (const item of list) {
-            if (item && item.url) {
-              let u = String(item.url).trim();
-              if (u.startsWith('/')) {
-                u = 'https://www.xiaohongshu.com' + u;
-              }
-              if (!task.progress.noteUrls.includes(u)) {
-                task.progress.noteUrls.push(u);
+          try {
+            const htmlRes = await this._send(tabId, { action: 'getHTML', selectors: this._sel('search.feedsContainer') });
+            if (htmlRes && htmlRes.data) {
+              const list = await this.llm.extractNoteList(htmlRes.data);
+              if (Array.isArray(list)) {
+                for (const item of list) {
+                  if (task.progress.noteUrls.length >= limit) break;
+                  if (item && item.url) {
+                    let u = String(item.url).trim();
+                    if (u.startsWith('/')) {
+                      u = 'https://www.xiaohongshu.com' + u;
+                    }
+                    if (!task.progress.noteUrls.includes(u)) {
+                      task.progress.noteUrls.push(u);
+                    }
+                  }
+                }
               }
             }
+          } catch (searchLlmErr) {
+            console.warn('[xhs] 搜索阶段回退 LLM 提取笔记链接异常:', searchLlmErr);
           }
         }
         // CHECKPOINT：每轮滚动后保存已采集的 URL 列表，保证断点可恢复。
@@ -367,8 +474,15 @@ export class Scraper {
       }
     }
 
+    if (task.progress.noteUrls.length > limit) {
+      task.progress.noteUrls = task.progress.noteUrls.slice(0, limit);
+    }
     task.progress.notesTotal = task.progress.noteUrls.length;
-    task.progress.stepMessage = `搜索完成，共获取 ${task.progress.notesTotal} 篇笔记，准备提取详情与评论...`;
+    if (task.progress.notesTotal === 0) {
+      task.progress.stepMessage = `搜索完成：未发现与关键词相关的笔记（可能为敏感词或无搜索结果）`;
+    } else {
+      task.progress.stepMessage = `搜索完成，共获取 ${task.progress.notesTotal} 篇笔记，准备提取详情与评论...`;
+    }
     await this.taskManager.saveProgress(task, {
       notesTotal: task.progress.notesTotal,
       stepMessage: task.progress.stepMessage,
@@ -378,6 +492,13 @@ export class Scraper {
   // ---- 详情 + 评论阶段 ---------------------------------------------------
 
   async _detailPhase(task) {
+    if (!task.progress.noteUrls || task.progress.noteUrls.length === 0) {
+      task.progress.phase = 'done';
+      task.progress.stepMessage = '采集完成：未发现与关键词相关的笔记（可能为敏感词或无搜索结果）';
+      await this.taskManager.saveProgress(task, { phase: 'done', stepMessage: task.progress.stepMessage });
+      return;
+    }
+
     task.progress.phase = 'collectingNotes';
     task.progress.stepMessage = '正在准备提取笔记详情...';
     await this.taskManager.saveProgress(task, { phase: 'collectingNotes', stepMessage: task.progress.stepMessage });
@@ -424,11 +545,20 @@ export class Scraper {
         }
 
         const commentDepth = task.config?.commentsPerNote ?? (task.config?.comments === false ? 0 : 20);
+        let commentsDomSuccess = false;
         if (commentDepth > 0) {
           try {
+            // 向下平滑滚动一次以触发评论懒加载（小红书评论区进入视口才发起请求渲染）
+            await this._send(tabId, { action: 'scroll', distance: 500, duration: 600 }).catch(() => {});
+            await this.sleep(600);
+
             const cRes = await this._send(tabId, { action: 'getComments', limit: commentDepth });
-            if (cRes && Array.isArray(cRes.data) && cRes.data.length > 0) {
+            if (cRes && Array.isArray(cRes.data)) {
               comments = cRes.data;
+              // 若抓取到了评论，或者 DOM 成功定位到了评论区（确认为 0 评论），则无需回退 LLM
+              if (comments.length > 0 || cRes.sectionFound !== false) {
+                commentsDomSuccess = true;
+              }
             }
           } catch (_) {}
         }
@@ -441,13 +571,26 @@ export class Scraper {
           detail = await this.llm.extractNoteDetail(detailHtml);
         }
 
-        if (commentDepth > 0 && comments.length === 0) {
+        if (commentDepth > 0 && comments.length === 0 && !commentsDomSuccess) {
           try {
             const commentsHtml = (
               await this._send(tabId, { action: 'getHTML', selectors: this._sel('noteDetail.commentSection') })
             ).data;
             comments = await this.llm.extractComments(commentsHtml);
           } catch (_) {}
+        }
+
+        // 最终保障：对评论列表做一次唯一性去重（author + text）
+        if (Array.isArray(comments) && comments.length > 1) {
+          const seen = new Set();
+          comments = comments.filter((c) => {
+            const text = String(c?.text ?? c?.content ?? '').trim();
+            const author = String(c?.author ?? '').trim();
+            const key = `${author}::${text}`;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+          });
         }
 
         const note = {
@@ -480,7 +623,7 @@ export class Scraper {
         if (
           this._cancelled.has(task.id) ||
           (err && (err.isCancellation || err.code === 'RATE_LIMITED' || err instanceof RateLimitError || err.code === 'AUTH_REQUIRED')) ||
-          String(err?.message || '').toLowerCase().includes('aborted')
+          (this._cancelled.has(task.id) && String(err?.message || '').toLowerCase().includes('aborted'))
         ) {
           throw err;
         }
@@ -491,6 +634,7 @@ export class Scraper {
           url,
           phase: 'collectingNotes',
           message: String(err?.message ?? err),
+          error: String(err?.message ?? err),
           at: Date.now(),
         });
         task.progress.currentNoteIndex = i;
@@ -518,7 +662,7 @@ export class Scraper {
       await this.taskManager.saveProgress(task, { phase: 'done' });
       await this.taskManager.updateStatus(task, 'completed');
     } catch (err) {
-      if (this._cancelled.has(task.id) || (err && err.isCancellation) || String(err?.message || '').toLowerCase().includes('aborted')) {
+      if (this._cancelled.has(task.id) || (err && err.isCancellation) || (this._cancelled.has(task.id) && String(err?.message || '').toLowerCase().includes('aborted'))) {
         if (this._finishedEarly && this._finishedEarly.has(task.id)) {
           task.progress.phase = 'done';
           task.progress.stepMessage = `提前完成采集，已保存全部 ${task.progress.notesCollected} 篇数据`;
@@ -584,7 +728,7 @@ export class Scraper {
       await this.taskManager.saveProgress(task, { phase: 'done' });
       await this.taskManager.updateStatus(task, 'completed');
     } catch (err) {
-      if (this._cancelled.has(task.id) || (err && err.isCancellation) || String(err?.message || '').toLowerCase().includes('aborted')) {
+      if (this._cancelled.has(task.id) || (err && err.isCancellation) || (this._cancelled.has(task.id) && String(err?.message || '').toLowerCase().includes('aborted'))) {
         if (this._finishedEarly && this._finishedEarly.has(task.id)) {
           task.progress.phase = 'done';
           task.progress.stepMessage = `提前完成采集，已保存全部 ${task.progress.notesCollected} 篇数据`;
