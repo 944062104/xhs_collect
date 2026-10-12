@@ -464,11 +464,12 @@ test('EXPORT_DATA csv 含表头 + 数据行，且正确转义', async () => {
   assert.equal(lines.length, 2, '应恰好为 表头 + 1 数据行');
   assert.equal(
     lines[0],
-    'id,taskId,url,title,content,author,likes,tags,commentsCount,collectedAt',
+    'id,taskId,url,title,content,author,authorId,likes,collects,commentsCount,publishedAt,coverUrl,tags,collectedAt',
     '表头列应完整'
   );
   // 标题含逗号与引号 → 应被双引号包裹且内部引号翻倍
   assert.ok(lines[1].includes('"Hello, ""World"""'), `标题应被正确转义，实际行: ${lines[1]}`);
+
   // commentsCount 应等于 commentList 长度
   assert.ok(lines[1].endsWith(',9'), `行尾应为 collectedAt=9，实际: ${lines[1]}`);
 });
@@ -510,7 +511,7 @@ test('EXPORT_DATA comments_csv 展平评论并输出完整评论明细表', asyn
 
   const lines = reply.data.split('\n');
   assert.equal(lines.length, 3, '应为 表头 + 2 条评论行');
-  assert.equal(lines[0], 'noteId,noteTitle,noteUrl,commentAuthor,commentContent,commentLikes,commentTime');
+  assert.equal(lines[0], 'noteId,noteTitle,noteUrl,commentAuthor,isAuthor,commentContent,commentLikes,commentLocation,commentLevel,commentTime');
   assert.ok(lines[1].includes('note_cm_1') && lines[1].includes('小红') && lines[1].includes('好用！'));
   assert.ok(lines[2].includes('note_cm_1') && lines[2].includes('小绿') && lines[2].includes('求链接'));
 });
@@ -589,4 +590,280 @@ test('RESET_TASK 清除当前活动运行状态', async () => {
   await handler({ type: 'RESET_TASK' }, {}, sendResponse);
   assert.equal(sendResponse.last().ok, true);
 });
+
+test('GET_TASK_HISTORY 返回全部历史任务', async () => {
+  const { handler, storage } = await buildFixture();
+  await storage.saveTask({ id: 'h1', timestamps: { createdAt: 10 }, status: 'completed', keyword: '美甲' });
+  await storage.saveTask({ id: 'h2', timestamps: { createdAt: 20 }, status: 'completed', keyword: '穿搭' });
+
+  const sendResponse = makeSendResponse();
+  await handler({ type: 'GET_TASK_HISTORY' }, {}, sendResponse);
+  const resp = sendResponse.last();
+  assert.equal(resp.ok, true);
+  assert.equal(resp.tasks.length, 2);
+  assert.equal(resp.tasks[0].id, 'h2');
+  assert.equal(resp.tasks[1].id, 'h1');
+});
+
+test('GET_ALL_NOTES 返回全局所有笔记', async () => {
+  const { handler, storage } = await buildFixture();
+  await storage.saveNote({ id: 'note1', taskId: 'h1', collectedAt: 10, title: 'Note 1' });
+  await storage.saveNote({ id: 'note2', taskId: 'h2', collectedAt: 20, title: 'Note 2' });
+
+  const sendResponse = makeSendResponse();
+  await handler({ type: 'GET_ALL_NOTES' }, {}, sendResponse);
+  const resp = sendResponse.last();
+  assert.equal(resp.ok, true);
+  assert.equal(resp.notes.length, 2);
+  assert.equal(resp.notes[0].id, 'note2');
+});
+
+test('EXPORT_ALL_DATA 导出全量笔记数据', async () => {
+  const { handler, storage } = await buildFixture();
+  await storage.saveNote({ id: 'note1', taskId: 'h1', title: 'Note A', author: 'User A', collectedAt: 10 });
+  await storage.saveNote({ id: 'note2', taskId: 'h2', title: 'Note B', author: 'User B', collectedAt: 20 });
+
+  const sendResponse = makeSendResponse();
+  await handler({ type: 'EXPORT_ALL_DATA', format: 'csv' }, {}, sendResponse);
+  const resp = sendResponse.last();
+  assert.equal(resp.ok, true);
+  assert.equal(resp.filename, 'xhs_all_notes.csv');
+  assert.ok(resp.data.includes('Note A'));
+  assert.ok(resp.data.includes('Note B'));
+});
+
+test('LEARN_SITE_PATTERNS 调用 LLM 分析 DOM 并沉淀动态规则', async () => {
+  const fakeLlm = {
+    learnSitePatterns: async () => ({
+      search: {
+        filterButton: ['.filter-box'],
+        sortTabs: { time_descending: ['.sort-new'] },
+      },
+    }),
+  };
+  const chromeApi = makeMockChrome();
+  const storage = makeStorage();
+  const fakeScraper = makeFakeScraper(storage);
+  install({ chromeApi, storage, scraper: fakeScraper, llmClient: fakeLlm });
+
+  const rawHandler = chromeApi.runtime.onMessage._handlers[0];
+  const handler = async (...args) => {
+    rawHandler(...args);
+    if (rawHandler._lastPromise) await rawHandler._lastPromise;
+  };
+
+  await storage.saveConfig('apiKey', API_KEY);
+
+  const fakeHtml = '<div class="filter-box">筛选</div><div class="sort-new">最新</div>';
+  const sendResponse = makeSendResponse();
+  await handler(
+    {
+      type: 'LEARN_SITE_PATTERNS',
+      html: fakeHtml,
+      targetType: 'search',
+    },
+    {},
+    sendResponse
+  );
+  const resp = sendResponse.last();
+  assert.equal(resp.ok, true);
+  assert.ok(resp.patterns);
+  const saved = await storage.getConfig('dynamic_site_patterns');
+  assert.ok(saved);
+});
+
+test('RESET_DYNAMIC_PATTERNS 清空动态沉淀规则', async () => {
+  const { handler, storage } = await buildFixture();
+  await storage.saveConfig('dynamic_site_patterns', { search: {} });
+  const sendResponse = makeSendResponse();
+  await handler({ type: 'RESET_DYNAMIC_PATTERNS' }, {}, sendResponse);
+  assert.equal(sendResponse.last().ok, true);
+  const saved = await storage.getConfig('dynamic_site_patterns');
+  assert.equal(saved, null);
+});
+
+test('LEARN_SITE_PATTERNS：通过探针回放过滤零命中规则并保存验证报告', async () => {
+  const fakeLlm = {
+    learnSitePatterns: async () => ({
+      search: {
+        filterButton: ['.filter-box'],
+        invalidField: ['.ghost-element'],
+      },
+    }),
+  };
+  const chromeApi = makeMockChrome();
+  // 模拟 tabs.sendMessage 返回 verifySelectors 结果
+  chromeApi.tabs = {
+    sendMessage: (tabId, msg, cb) => {
+      if (msg.action === 'verifySelectors') {
+        cb({
+          ok: true,
+          results: {
+            'search.filterButton': { selector: '.filter-box', matchCount: 1, valid: true, sampleText: '筛选' },
+            'search.invalidField': { selector: '.ghost-element', matchCount: 0, valid: false, sampleText: '' },
+          },
+        });
+      } else {
+        cb({ ok: true });
+      }
+    },
+  };
+
+  const storage = makeStorage();
+  const fakeScraper = makeFakeScraper(storage);
+  install({ chromeApi, storage, scraper: fakeScraper, llmClient: fakeLlm });
+
+  const rawHandler = chromeApi.runtime.onMessage._handlers[0];
+  const handler = async (...args) => {
+    rawHandler(...args);
+    if (rawHandler._lastPromise) await rawHandler._lastPromise;
+  };
+
+  await storage.saveConfig('apiKey', API_KEY);
+
+  const sendResponse = makeSendResponse();
+  await handler(
+    {
+      type: 'LEARN_SITE_PATTERNS',
+      html: '<div>test</div>',
+      tabId: 101,
+      targetType: 'search',
+    },
+    {},
+    sendResponse
+  );
+
+  const resp = sendResponse.last();
+  assert.equal(resp.ok, true);
+  assert.ok(resp.report, '应返回验证报告');
+  assert.equal(resp.report['search.filterButton'].valid, true);
+  assert.equal(resp.report['search.invalidField'].valid, false);
+
+  const saved = await storage.getConfig('dynamic_site_patterns');
+  assert.ok(saved.metadata?.report, '经验库应沉淀验证报告元数据');
+  // 无效规则不应写入 selectors
+  assert.ok(saved.search?.filterButton);
+  assert.equal(saved.search?.invalidField, undefined, '零命中规则应被过滤');
+});
+
+test('VERIFY_DYNAMIC_PATTERNS：对已保存的动态规则发起在线健康回测', async () => {
+  const chromeApi = makeMockChrome();
+  chromeApi.tabs = {
+    sendMessage: (tabId, msg, cb) => {
+      if (msg.action === 'verifySelectors') {
+        cb({
+          ok: true,
+          results: {
+            'search.filterButton': { selector: '.filter-box', matchCount: 2, valid: true, sampleText: '筛选' },
+          },
+        });
+      } else {
+        cb({ ok: true });
+      }
+    },
+  };
+
+  const storage = makeStorage();
+  const fakeScraper = makeFakeScraper(storage);
+  install({ chromeApi, storage, scraper: fakeScraper });
+
+  await storage.saveConfig('dynamic_site_patterns', {
+    search: { filterButton: ['.filter-box'] },
+  });
+
+  const rawHandler = chromeApi.runtime.onMessage._handlers[0];
+  const handler = async (...args) => {
+    rawHandler(...args);
+    if (rawHandler._lastPromise) await rawHandler._lastPromise;
+  };
+
+  const sendResponse = makeSendResponse();
+  await handler({ type: 'VERIFY_DYNAMIC_PATTERNS', tabId: 101 }, {}, sendResponse);
+
+  const resp = sendResponse.last();
+  assert.equal(resp.ok, true);
+  assert.ok(resp.report['search.filterButton']);
+  assert.equal(resp.report['search.filterButton'].matchCount, 2);
+});
+
+
+test('DELETE_TASKS 批量删除指定已完成任务并级联删除笔记', async () => {
+  const { handler, storage } = await buildFixture();
+  await storage.saveTask({ id: 'task_del_1', status: 'completed' });
+  await storage.saveTask({ id: 'task_del_2', status: 'failed' });
+  await storage.saveTask({ id: 'task_keep', status: 'completed' });
+
+  await storage.saveNote({ id: 'n1', taskId: 'task_del_1' });
+  await storage.saveNote({ id: 'n2', taskId: 'task_del_2' });
+  await storage.saveNote({ id: 'n3', taskId: 'task_keep' });
+
+  const sendResponse = makeSendResponse();
+  await handler(
+    { type: 'DELETE_TASKS', taskIds: ['task_del_1', 'task_del_2'] },
+    {},
+    sendResponse
+  );
+
+  const resp = sendResponse.last();
+  assert.equal(resp.ok, true);
+  assert.equal(resp.deletedCount, 2);
+
+  assert.equal(await storage.getTask('task_del_1'), null);
+  assert.equal(await storage.getTask('task_del_2'), null);
+  assert.notEqual(await storage.getTask('task_keep'), null);
+  assert.deepEqual(await storage.getNotesByTaskId('task_del_1'), []);
+  assert.equal((await storage.getNotesByTaskId('task_keep')).length, 1);
+});
+
+test('DELETE_TASKS 跳过正在 running 的任务以防冲突', async () => {
+  const { handler, storage } = await buildFixture();
+  await storage.saveTask({ id: 'task_running', status: 'running' });
+  await storage.saveTask({ id: 'task_done', status: 'completed' });
+
+  const sendResponse = makeSendResponse();
+  await handler(
+    { type: 'DELETE_TASKS', taskIds: ['task_running', 'task_done'] },
+    {},
+    sendResponse
+  );
+
+  const resp = sendResponse.last();
+  assert.equal(resp.ok, true);
+  assert.equal(resp.deletedCount, 1);
+  assert.equal(resp.skippedRunningCount, 1);
+
+  assert.notEqual(await storage.getTask('task_running'), null, '运行中任务不应被删除');
+  assert.equal(await storage.getTask('task_done'), null, '已完成任务应被删除');
+});
+
+test('CANCEL_TASK 能够正确调用当前 activeScraper 实例的 cancel 方法', async () => {
+  const chromeApi = makeMockChrome();
+  const storage = makeStorage();
+  let cancelledTaskId = null;
+  const fakeScraperInstance = {
+    run: () => new Promise(() => {}), // 模拟挂起的采集
+    cancel: async (tid) => {
+      cancelledTaskId = tid;
+    },
+  };
+  // 注入替身
+  install({ chromeApi, storage, scraper: fakeScraperInstance });
+  const rawHandler = chromeApi.runtime.onMessage._handlers[0];
+  const handler = async (...args) => {
+    rawHandler(...args);
+    if (rawHandler._lastPromise) await rawHandler._lastPromise;
+  };
+  await storage.saveConfig('apiKey', API_KEY);
+
+  const rStart = makeSendResponse();
+  await handler({ type: 'START_TASK', keyword: '美妆' }, {}, rStart);
+  assert.equal(rStart.last().ok, true);
+  const taskId = rStart.last().taskId;
+
+  const rCancel = makeSendResponse();
+  await handler({ type: 'CANCEL_TASK', taskId }, {}, rCancel);
+  assert.equal(rCancel.last().ok, true);
+  assert.equal(cancelledTaskId, taskId, '应直接取消正在运行中的 activeScraper 实例');
+});
+
 
