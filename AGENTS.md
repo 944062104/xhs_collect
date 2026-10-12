@@ -9,7 +9,7 @@
 |---|---|
 | 项目 | Chrome MV3 原生 JS 扩展，关键词采集小红书笔记/评论并导出 JSON/CSV |
 | 源码根 | `src/`（即扩展根目录，`manifest.json` 在此） |
-| 测试 | `node --test <文件列表>`（见下方命令坑，当前 9 套件 181/181 通过） |
+| 测试 | `node --test <文件列表>`（见下方命令坑，当前 9 套件 197/197 通过） |
 | 运行时依赖 | 无第三方库；`fake-indexeddb` 仅测试用（devDependency） |
 | 数据存储 | 仅 IndexedDB（库 `xhs-agent`，stores: `tasks`/`notes`/`config`），无外部后端 |
 | 开发分支 | `master`（所有功能均已集成并保留唯一直线分支） |
@@ -98,6 +98,7 @@ for f in tests/site-patterns.test.js tests/storage.test.mjs tests/llm-client.tes
 |---|---|---|
 | `doc/plan.md` | P1 基础版 8 阶段任务、接口契约、架构与红线 | 查阅初始系统基石设计时 |
 | `doc/plans/2026-10-11-comprehensive-optimization-plan.md` | 体验与功能综合优化（限流保护/即时导出/评论深度/批量词等） | 查阅最新特性演进细节时 |
+| `doc/plans/2026-10-12-goal-oriented-remediation-loop.md` | 目标契约驱动的任务自愈闭环（web-access 交互理念与自愈流水） | 查阅 AI 闭环决策与动态规则自学机制时 |
 | `doc/spec.md` | P1 详细规格（字段/枚举/边界） | 实现细节不确定时 |
 | `doc/brief.md` | 需求背景与产品目标 | 理解「为什么这么做」 |
 | `.workbuddy/memory/` | 本仓库每日日志 + 长期笔记 | 接手近期改动、长期约定 |
