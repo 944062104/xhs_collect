@@ -709,3 +709,62 @@ input[type="checkbox"] {
   white-space: nowrap;
 }
 
+.pattern-debug-meta {
+  font-size: 10px;
+  color: #475569;
+  background: #f1f5f9;
+  padding: 4px 6px;
+  border-radius: 4px;
+  line-height: 1.4;
+  word-break: break-all;
+}
+
+/* 调试查看弹层 */
+.debug-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.6);
+  backdrop-filter: blur(2px);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+}
+.debug-modal-content {
+  background: #ffffff;
+  border-radius: 8px;
+  width: 100%;
+  max-width: 360px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.2);
+  overflow: hidden;
+}
+.debug-modal-header {
+  padding: 8px 12px;
+  border-bottom: 1px solid #e2e8f0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.debug-modal-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+}
+.debug-modal-pre {
+  margin: 0;
+  padding: 10px;
+  font-size: 10px;
+  font-family: monospace;
+  color: #334155;
+  background: #f8fafc;
+  overflow-y: auto;
+  flex: 1;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+

@@ -668,6 +668,9 @@ test('LEARN_SITE_PATTERNS 调用 LLM 分析 DOM 并沉淀动态规则', async ()
   const resp = sendResponse.last();
   assert.equal(resp.ok, true);
   assert.ok(resp.patterns);
+  assert.ok(resp.debug, '响应应包含全透明调试元数据');
+  assert.equal(typeof resp.debug.htmlLength, 'number');
+  assert.ok(resp.debug.rawLearned);
   const saved = await storage.getConfig('dynamic_site_patterns');
   assert.ok(saved);
 });

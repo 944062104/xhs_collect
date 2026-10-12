@@ -394,6 +394,12 @@ function initPopup() {
     patternReportCard: $('patternReportCard'),
     patternReportList: $('patternReportList'),
     togglePatternReportBtn: $('togglePatternReportBtn'),
+    patternDebugMeta: $('patternDebugMeta'),
+    viewDebugHtmlBtn: $('viewDebugHtmlBtn'),
+    debugModal: $('debugModal'),
+    debugModalTitle: $('debugModalTitle'),
+    debugModalPre: $('debugModalPre'),
+    closeDebugModalBtn: $('closeDebugModalBtn'),
   };
 
   let taskId = null;
@@ -743,12 +749,52 @@ function initPopup() {
   }
 
   // --- 动态规则自动学习（沙箱回测闭环）：分析当前页面并沉淀高可靠经验 ---
-  function updatePatternReport(report) {
+  let lastCapturedHtml = '';
+
+  function openDebugModal(title, text) {
+    if (!els.debugModal || !els.debugModalPre || !els.debugModalTitle) return;
+    els.debugModalTitle.textContent = title;
+    els.debugModalPre.textContent = text || '（无内容）';
+    els.debugModal.style.display = 'flex';
+  }
+
+  function closeDebugModal() {
+    if (els.debugModal) els.debugModal.style.display = 'none';
+  }
+
+  if (els.closeDebugModalBtn) els.closeDebugModalBtn.addEventListener('click', closeDebugModal);
+  if (els.debugModal) {
+    els.debugModal.addEventListener('click', (e) => {
+      if (e.target === els.debugModal) closeDebugModal();
+    });
+  }
+  if (els.viewDebugHtmlBtn) {
+    els.viewDebugHtmlBtn.addEventListener('click', () => {
+      openDebugModal('捕获的 HTML 骨架片段预览', lastCapturedHtml);
+    });
+  }
+
+  function updatePatternReport(report, debug = null) {
     if (!els.patternReportCard || !els.patternReportList) return;
     if (!report || Object.keys(report).length === 0) {
       els.patternReportCard.style.display = 'none';
+      if (els.patternDebugMeta) els.patternDebugMeta.style.display = 'none';
+      if (els.viewDebugHtmlBtn) els.viewDebugHtmlBtn.style.display = 'none';
       return;
     }
+
+    if (debug) {
+      lastCapturedHtml = debug.htmlPreview || '';
+      if (els.patternDebugMeta) {
+        const skeletonText = debug.isSkeleton ? '✨ 智能紧凑骨架' : '整页 DOM';
+        els.patternDebugMeta.textContent = `标签页 [ID:${debug.tabId || '当前'}] · 提取方式: ${skeletonText} (${debug.htmlLength} 字符) · 耗时: ${debug.durationMs || 0}ms`;
+        els.patternDebugMeta.style.display = 'block';
+      }
+      if (els.viewDebugHtmlBtn && lastCapturedHtml) {
+        els.viewDebugHtmlBtn.style.display = 'inline-block';
+      }
+    }
+
     els.patternReportList.innerHTML = renderPatternReportHtml(report);
     els.patternReportCard.style.display = 'flex';
   }
@@ -762,21 +808,22 @@ function initPopup() {
       return;
     }
     els.learnFeedback.className = 'test-feedback';
-    els.learnFeedback.textContent = '正在获取页面 DOM 并唤醒大模型勘探规则...';
+    els.learnFeedback.textContent = '[1/4] 正在连接小红书标签页并提取核心交互骨架...';
     els.learnPatternsBtn.disabled = true;
 
     // 优先通过 chrome.tabs 查询当前窗口的活动标签或任意小红书标签
     function triggerLearn(targetTabId) {
-      chrome.runtime.sendMessage({ type: 'LEARN_SITE_PATTERNS', tabId: targetTabId }, (resp) => {
+      els.learnFeedback.textContent = '[2/4] 骨架提取完成，大模型正在勘探定位策略...';
+      chrome.runtime.sendMessage({ type: 'LEARN_SITE_PATTERNS', tabId: targetTabId, targetType: 'search' }, (resp) => {
         els.learnPatternsBtn.disabled = false;
         if (chrome.runtime.lastError || !resp || !resp.ok) {
           els.learnFeedback.className = 'test-feedback fail';
           els.learnFeedback.textContent = '学习失败: ' + (resp?.message || resp?.error || '通信异常');
         } else {
           els.learnFeedback.className = 'test-feedback success';
-          els.learnFeedback.textContent = '✓ 成功！已提炼规则并完成页面沙箱验证';
+          els.learnFeedback.textContent = '✓ [4/4] 规则自学成功，已完成沙箱验证并沉淀';
           if (resp.report) {
-            updatePatternReport(resp.report);
+            updatePatternReport(resp.report, resp.debug);
           }
         }
       });
@@ -785,7 +832,8 @@ function initPopup() {
     if (chrome && chrome.tabs && chrome.tabs.query) {
       chrome.tabs.query({ url: '*://*.xiaohongshu.com/*' }, (tabs) => {
         if (tabs && tabs.length > 0) {
-          const activeXhs = tabs.find((t) => t.active) || tabs[0];
+          const searchTab = tabs.find((t) => t.url && t.url.includes('search_result'));
+          const activeXhs = tabs.find((t) => t.active) || searchTab || tabs[0];
           triggerLearn(activeXhs.id);
         } else {
           chrome.tabs.query({ active: true, currentWindow: true }, (curTabs) => {
@@ -1167,8 +1215,18 @@ function initPopup() {
     });
   }
 
+  function loadSavedPatternReport() {
+    if (!chrome || !chrome.runtime || !chrome.runtime.sendMessage) return;
+    chrome.runtime.sendMessage({ type: 'VERIFY_DYNAMIC_PATTERNS' }, (resp) => {
+      if (resp && resp.ok && resp.report && Object.keys(resp.report).length > 0) {
+        updatePatternReport(resp.report);
+      }
+    });
+  }
+
   loadConfig();
   loadLatestTask();
+  loadSavedPatternReport();
 }
 
 // 浏览器中：DOM 就绪后接线。

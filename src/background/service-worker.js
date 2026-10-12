@@ -446,34 +446,45 @@ async function handleLearnSitePatterns(msg, sendResponse) {
     }
 
     let targetTabId = msg.tabId;
+    let targetTabUrl = '';
     if (!targetTabId && chromeApi?.tabs?.query) {
-      // 1. 优先找当前窗口的活动小红书标签
       const xhsTabs = await new Promise((resolve) => {
         chromeApi.tabs.query({ url: '*://*.xiaohongshu.com/*' }, resolve);
       });
       if (xhsTabs && xhsTabs.length > 0) {
-        const activeXhs = xhsTabs.find((t) => t.active) || xhsTabs[0];
+        // 优先在包含 search_result 的搜索页或当前激活标签
+        const searchTab = xhsTabs.find((t) => t.url && t.url.includes('search_result'));
+        const activeXhs = xhsTabs.find((t) => t.active) || searchTab || xhsTabs[0];
         targetTabId = activeXhs.id;
+        targetTabUrl = activeXhs.url || '';
       } else {
-        // 2. 兜底找当前活动标签
         const curTabs = await new Promise((resolve) => {
           chromeApi.tabs.query({ active: true, currentWindow: true }, resolve);
         });
-        if (curTabs && curTabs[0]) targetTabId = curTabs[0].id;
+        if (curTabs && curTabs[0]) {
+          targetTabId = curTabs[0].id;
+          targetTabUrl = curTabs[0].url || '';
+        }
       }
     }
 
     let html = msg.html;
+    let isSkeleton = false;
     if (!html && targetTabId && chromeApi?.tabs?.sendMessage) {
       try {
         const domResp = await new Promise((resolve) => {
-          chromeApi.tabs.sendMessage(targetTabId, { action: 'getHTML', selectors: ['body'], expandFilter: true }, (res) => {
-            if (chromeApi.runtime?.lastError) resolve(null);
-            else resolve(res);
-          });
+          chromeApi.tabs.sendMessage(
+            targetTabId,
+            { action: 'getHTML', selectors: ['body'], targetType: msg.targetType || 'search', expandFilter: true },
+            (res) => {
+              if (chromeApi.runtime?.lastError) resolve(null);
+              else resolve(res);
+            }
+          );
         });
         if (domResp && domResp.ok && domResp.data) {
           html = domResp.data;
+          isSkeleton = Boolean(domResp.isSkeleton);
         }
       } catch (_) {}
     }
@@ -482,12 +493,13 @@ async function handleLearnSitePatterns(msg, sendResponse) {
       sendResponse({
         ok: false,
         error: 'NO_HTML_FOUND',
-        message: '无法获取小红书页面 DOM。请先在浏览器中打开一个小红书页面（xiaohongshu.com）并刷新后再试。',
+        message: '无法获取小红书页面 DOM。请确保当前浏览器打开了小红书页面（例如搜索页），并刷新一次该页面后再点击学习。',
       });
       return;
     }
 
     const client = llmClient ?? new LLMClient({ ...llmConfig, apiKey });
+    const startTime = Date.now();
     const learned = await client.learnSitePatterns(html, msg.targetType || 'all');
     if (!learned || typeof learned !== 'object') {
       sendResponse({ ok: false, error: 'LEARN_FAILED', message: '模型未能识别出有效选择器规则' });
@@ -523,7 +535,18 @@ async function handleLearnSitePatterns(msg, sendResponse) {
     };
     await storage.saveConfig('dynamic_site_patterns', merged);
 
-    sendResponse({ ok: true, patterns: merged, report: verifyReport });
+    // 构造全透明调试元数据
+    const debug = {
+      tabId: targetTabId,
+      tabUrl: targetTabUrl,
+      htmlLength: html.length,
+      isSkeleton: isSkeleton,
+      htmlPreview: html.slice(0, 1500),
+      rawLearned: learned,
+      durationMs: Date.now() - startTime,
+    };
+
+    sendResponse({ ok: true, patterns: merged, report: verifyReport, debug });
   } catch (err) {
     sendResponse({ ok: false, error: err?.message || 'LEARN_ERROR' });
   }

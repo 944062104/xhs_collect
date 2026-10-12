@@ -151,13 +151,29 @@
           </div>
           <div id="learnFeedback" class="test-feedback"></div>
 
-          <!-- 勘测报告折叠面板 -->
+          <!-- 勘测报告与透明控制台面板 -->
           <div id="patternReportCard" class="pattern-report-card" style="display:none;">
             <div class="pattern-report-title">
-              <span>📊 规则实测报告</span>
-              <button id="togglePatternReportBtn" class="btn-small-link">收起</button>
+              <span>📊 规则实测与自学控制台</span>
+              <div style="display:flex;gap:6px;">
+                <button id="viewDebugHtmlBtn" class="btn-small-link" style="display:none;">查看捕获HTML</button>
+                <button id="togglePatternReportBtn" class="btn-small-link">收起</button>
+              </div>
             </div>
+            <!-- 调试状态条 -->
+            <div id="patternDebugMeta" class="pattern-debug-meta" style="display:none;"></div>
             <div id="patternReportList" class="pattern-report-list"></div>
+          </div>
+        </div>
+
+        <!-- 捕获 HTML / 原始 JSON 弹层 -->
+        <div id="debugModal" class="debug-modal" style="display:none;">
+          <div class="debug-modal-content">
+            <div class="debug-modal-header">
+              <span id="debugModalTitle" class="debug-modal-title">捕获的 HTML 骨架预览</span>
+              <button id="closeDebugModalBtn" class="btn-small-ghost">✕ 关闭</button>
+            </div>
+            <pre id="debugModalPre" class="debug-modal-pre"></pre>
           </div>
         </div>
 

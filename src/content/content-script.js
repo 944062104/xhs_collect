@@ -322,9 +322,73 @@ function findFilterToggleBtn() {
   return null;
 }
 
-// getHTML：返回元素 outerHTML。
+// 提取搜索页紧凑核心骨架（顶部操作栏/筛选浮层 + 前几个笔记卡片），防止整页数十万字 HTML 被暴力切断
+function extractSearchSkeleton() {
+  try {
+    var parts = [];
+
+    // 1. 尝试抓取筛选按钮/操作栏区域
+    var filterBtn = typeof findFilterToggleBtn === 'function' ? findFilterToggleBtn() : null;
+    if (filterBtn) {
+      var headerContainer = filterBtn.parentElement || filterBtn;
+      parts.push('<div class="skeleton-header-box">' + (headerContainer.outerHTML || filterBtn.outerHTML) + '</div>');
+    }
+
+    // 2. 尝试抓取已展开的排序面板
+    var popup = typeof findSortPopup === 'function' ? findSortPopup() : null;
+    if (popup) {
+      parts.push('<div class="skeleton-sort-panel">' + (popup.outerHTML || '') + '</div>');
+    }
+
+    // 3. 抓取前 3~5 个笔记卡片示例
+    var cardSelectors = [
+      'section[class*="note"]',
+      'div[class*="note-item"]',
+      'a[href*="/explore/"]',
+      'a[href*="/search_result/"]',
+      '.feeds-container > div',
+      '.note-item',
+    ];
+    var cards = [];
+    for (var i = 0; i < cardSelectors.length; i++) {
+      try {
+        var found = document.querySelectorAll(cardSelectors[i]);
+        if (found && found.length > 0) {
+          for (var j = 0; j < found.length && cards.length < 5; j++) {
+            cards.push(found[j]);
+          }
+          break;
+        }
+      } catch (_) {}
+    }
+
+    if (cards.length > 0) {
+      var cardsHtml = cards.map(function (c) { return c.outerHTML || ''; }).join('\n');
+      parts.push('<div class="skeleton-cards-box">' + cardsHtml + '</div>');
+    }
+
+    if (parts.length > 0) {
+      return '<div class="xhs-search-skeleton">\n' + parts.join('\n') + '\n</div>';
+    }
+  } catch (_) {}
+  return null;
+}
+
+// getHTML：返回元素 outerHTML（若 targetType 为 search 或在搜索页，自动优先构建紧凑核心骨架）。
 function handleGetHTML(msg, sendResponse) {
   function proceed() {
+    var isSearchPage =
+      msg.targetType === 'search' ||
+      (typeof window !== 'undefined' && window.location && String(window.location.href).includes('search_result'));
+
+    if (isSearchPage) {
+      var skeleton = extractSearchSkeleton();
+      if (skeleton) {
+        sendResponse({ ok: true, data: skeleton, isSkeleton: true });
+        return;
+      }
+    }
+
     var el = findFirstElement(resolveSelectors(msg));
     if (!el) {
       sendResponse({ ok: false, error: 'SELECTOR_NOT_FOUND' });

@@ -331,6 +331,30 @@ test('onMessage getHTML：命中 → { ok: true, data: outerHTML }', async () =>
   assert.equal(resp.data, '<section>笔记</section>');
 });
 
+test('onMessage getHTML：针对搜索页自适应提取核心交互骨架（筛选栏+代表性卡片），避免整页截断', async () => {
+  resetDoc();
+  // 模拟搜索页元素
+  const filterBtn = makeElement('div', { className: 'filter-box', textContent: '筛选' });
+  const card1 = makeElement('section', { className: 'note-item', outerHTML: '<div class="note-item">卡片1</div>' });
+  const card2 = makeElement('section', { className: 'note-item', outerHTML: '<div class="note-item">卡片2</div>' });
+
+  docState.allMatches = {
+    'a[href*="/explore/"], a[href*="/search_result/"], section, .note-item': [card1, card2],
+  };
+  docState.cssMatches['.filter-box'] = filterBtn;
+  docState.textMatches['筛选'] = filterBtn;
+
+  const { response } = dispatch({
+    action: 'getHTML',
+    targetType: 'search',
+    selectors: ['body'],
+  });
+  const resp = await response;
+  assert.equal(resp.ok, true);
+  assert.ok(typeof resp.data === 'string');
+  assert.ok(resp.data.includes('卡片1') || resp.data.includes('filter-box') || resp.data.includes('筛选'));
+});
+
 test('onMessage getText：命中 → { ok: true, data: textContent }', async () => {
   resetDoc();
   const el = makeElement('p', { textContent: '正文内容' });
