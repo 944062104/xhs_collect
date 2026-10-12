@@ -13,7 +13,7 @@ const DEFAULT_COMMENTS_PER_NOTE = 20;
 // 纯函数（TDD 目标，可在 Node 中测试；无任何浏览器依赖）
 // ---------------------------------------------------------------------------
 
-// 构造 START_TASK 消息。opts = { limit=20, comments=false, format='json', crawlDelay=0 }。
+// 构造 START_TASK 消息。opts = { limit=20, comments=false, format='json', crawlDelay=0, sortType='general' }。
 function buildStartMessage(keyword, opts = {}) {
   const limit = typeof opts.limit === 'number' ? opts.limit : 20;
   const commentsPerNote = typeof opts.commentsPerNote === 'number'
@@ -21,6 +21,7 @@ function buildStartMessage(keyword, opts = {}) {
     : (opts.comments ? DEFAULT_COMMENTS_PER_NOTE : 0);
   const format = opts.format === 'csv' ? 'csv' : 'json';
   const crawlDelay = typeof opts.crawlDelay === 'number' ? opts.crawlDelay : 0;
+  const sortType = opts.sortType || 'general';
   return {
     type: 'START_TASK',
     keyword,
@@ -29,6 +30,7 @@ function buildStartMessage(keyword, opts = {}) {
       commentsPerNote,
       outputFormat: format,
       crawlDelay,
+      sortType,
     },
   };
 }
@@ -85,7 +87,36 @@ function csvField(value) {
   return s;
 }
 
-const CSV_COLUMNS = ['id', 'taskId', 'url', 'title', 'content', 'author', 'likes', 'tags', 'commentsCount', 'collectedAt'];
+const CSV_COLUMNS = [
+  'id',
+  'taskId',
+  'url',
+  'title',
+  'content',
+  'author',
+  'authorId',
+  'likes',
+  'collects',
+  'commentsCount',
+  'publishedAt',
+  'coverUrl',
+  'tags',
+  'collectedAt',
+];
+
+function formatCsvDateTime(ts) {
+  if (!ts) return '';
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return String(ts);
+  const pad = (n) => String(n).padStart(2, '0');
+  const Y = d.getFullYear();
+  const M = pad(d.getMonth() + 1);
+  const D = pad(d.getDate());
+  const h = pad(d.getHours());
+  const m = pad(d.getMinutes());
+  const s = pad(d.getSeconds());
+  return `${Y}-${M}-${D} ${h}:${m}:${s}`;
+}
 
 // 将笔记数组转为 CSV 字符串（含表头），与 Service Worker 列定义一致。
 function notesToCsv(notes) {
@@ -93,8 +124,23 @@ function notesToCsv(notes) {
   const rows = safeNotes.map((note) =>
     CSV_COLUMNS.map((col) => {
       if (col === 'commentsCount') {
-        const list = note.commentList ?? note.comments ?? [];
-        return csvField(Array.isArray(list) ? list.length : 0);
+        if (typeof note?.totalComments === 'number' && note.totalComments > 0) {
+          return csvField(note.totalComments);
+        }
+        const list = note ? (note.commentList ?? note.comments ?? []) : [];
+        return csvField(Array.isArray(list) ? list.length : (note?.commentsCount ?? 0));
+      }
+      if (col === 'tags') {
+        if (Array.isArray(note?.tags)) {
+          return csvField(note.tags.join(', '));
+        }
+        return csvField(note?.tags);
+      }
+      if (col === 'collectedAt') {
+        if (typeof note?.collectedAt === 'number' && note.collectedAt > 1e11) {
+          return csvField(formatCsvDateTime(note.collectedAt));
+        }
+        return csvField(note?.collectedAt);
       }
       return csvField(note ? note[col] : undefined);
     }).join(',')
@@ -107,23 +153,45 @@ function notesToJson(notes) {
   return JSON.stringify(Array.isArray(notes) ? notes : [], null, 2);
 }
 
-const COMMENT_CSV_COLUMNS = ['noteId', 'noteTitle', 'noteUrl', 'commentAuthor', 'commentContent', 'commentLikes', 'commentTime'];
 
-// 将笔记及其评论打平成独立的评论明细 CSV（便于受众情感与互动分析）
+const COMMENT_CSV_COLUMNS = [
+  'noteId',
+  'noteTitle',
+  'noteUrl',
+  'commentAuthor',
+  'isAuthor',
+  'commentContent',
+  'commentLikes',
+  'commentLocation',
+  'commentLevel',
+  'commentTime',
+];
+
+// 将笔记及其评论打平成独立的评论明细 CSV（便于受众情感与互动分析，含唯一性去重）
 function commentsToCsv(notes) {
   const safeNotes = Array.isArray(notes) ? notes : [];
   const rows = [];
   for (const note of safeNotes) {
     const comments = note.commentList ?? note.comments ?? [];
     if (Array.isArray(comments)) {
+      const seen = new Set();
       for (const c of comments) {
+        const text = String(c.content ?? c.text ?? '').trim();
+        const author = String(c.author ?? '').trim();
+        const key = `${author}::${text}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+
         rows.push([
           csvField(note.id),
           csvField(note.title),
           csvField(note.url),
-          csvField(c.author),
-          csvField(c.content ?? c.text),
+          csvField(author || '匿名用户'),
+          csvField(c.isAuthor ? '是' : '否'),
+          csvField(text),
           csvField(c.likes ?? 0),
+          csvField(c.location || ''),
+          csvField(c.level === 'reply' ? '楼中楼' : '主评'),
           csvField(c.publishedAt ?? c.time ?? ''),
         ].join(','));
       }
@@ -178,6 +246,96 @@ function renderNotePreviewRow(note) {
   `.trim();
 }
 
+// 格式化任务历史条目的展示信息
+function formatTaskHistoryItem(task) {
+  if (!task) return { keyword: '', count: 0, statusText: '未知', summary: '' };
+  const keyword = task.keyword || '（无关键词）';
+  const count = task.progress?.notesCollected ?? task.notesCount ?? 0;
+  const statusText = statusLabel(task.status);
+  const sortMap = {
+    general: '综合',
+    popularity_descending: '最热',
+    time_descending: '最新',
+  };
+  const sortText = sortMap[task.config?.sortType] || '默认';
+  const summary = `【${keyword}】采集 ${count} 篇 (${sortText}排序) · ${statusText}`;
+  return {
+    id: task.id,
+    keyword,
+    count,
+    statusText,
+    summary,
+  };
+}
+
+// 渲染单条任务历史条目 HTML
+function renderHistoryItemHtml(task, { isActive = false, isChecked = false } = {}) {
+  if (!task) return '';
+  const item = formatTaskHistoryItem(task);
+  const activeCls = isActive ? ' active' : '';
+  const checkedAttr = isChecked ? ' checked' : '';
+  const timeStr = task.timestamps?.createdAt ? new Date(task.timestamps.createdAt).toLocaleDateString() : '';
+  const safeId = escapeHtml(task.id || '');
+  const idShort = escapeHtml((task.id || '').slice(0, 16));
+
+  return `
+    <div class="history-item${activeCls}" data-task-id="${safeId}">
+      <div class="history-item-left">
+        <input type="checkbox" class="history-item-check" data-task-id="${safeId}"${checkedAttr}>
+        <div class="history-item-main">
+          <div class="history-item-title">${escapeHtml(item.summary)}</div>
+          <div class="history-item-meta">${timeStr} · 任务ID: ${idShort}...</div>
+        </div>
+      </div>
+      <div class="history-item-actions">
+        <div class="history-item-btn view-btn">${isActive ? '当前' : '查看 ➔'}</div>
+        <button class="history-del-single-btn" data-task-id="${safeId}" title="删除该记录">🗑️</button>
+      </div>
+    </div>
+  `.trim();
+}
+
+// 格式化自适应学习验证报告数据
+function formatPatternReport(report) {
+  if (!report || typeof report !== 'object') return [];
+  const list = [];
+  for (const [key, val] of Object.entries(report)) {
+    if (!val || typeof val !== 'object') continue;
+    list.push({
+      key,
+      selector: val.selector || '',
+      matchCount: Number(val.matchCount) || 0,
+      valid: Boolean(val.valid && val.matchCount > 0),
+      sampleText: val.sampleText || '',
+    });
+  }
+  return list;
+}
+
+// 渲染验证报告 HTML
+function renderPatternReportHtml(report) {
+  const items = formatPatternReport(report);
+  if (items.length === 0) {
+    return '<div class="pattern-report-empty" style="font-size:11px;color:#94a3b8;padding:6px;text-align:center;">暂无经沙箱验证的规则报告</div>';
+  }
+  return items
+    .map((item) => {
+      const badgeClass = item.valid ? 'badge-success' : 'badge-fail';
+      const badgeText = item.valid ? `✅ 命中 ${item.matchCount} 项` : '❌ 未命中';
+      const sample = item.sampleText ? `<div class="pattern-sample">示例: "${escapeHtml(item.sampleText)}"</div>` : '';
+      return `
+        <div class="pattern-report-item">
+          <div class="pattern-report-header">
+            <span class="pattern-key">${escapeHtml(item.key)}</span>
+            <span class="pattern-badge ${badgeClass}">${badgeText}</span>
+          </div>
+          <div class="pattern-selector"><code>${escapeHtml(item.selector)}</code></div>
+          ${sample}
+        </div>
+      `.trim();
+    })
+    .join('');
+}
 
 // ---------------------------------------------------------------------------
 // 浏览器接线（仅在此块内访问 document / chrome）
@@ -201,11 +359,22 @@ function initPopup() {
     previewCount: $('previewCount'),
     previewList: $('previewList'),
     openTabBtn: $('openTabBtn'),
+    sortType: $('sortType'),
     commentsDepth: $('commentsDepth'),
     finishEarlyBtn: $('finishEarlyBtn'),
     exportJsonBtn: $('exportJsonBtn'),
     exportCsvBtn: $('exportCsvBtn'),
     exportCommentsBtn: $('exportCommentsBtn'),
+    historyToggleBtn: $('historyToggleBtn'),
+    historySection: $('historySection'),
+    closeHistoryBtn: $('closeHistoryBtn'),
+    historyAllCount: $('historyAllCount'),
+    exportAllCsvBtn: $('exportAllCsvBtn'),
+    exportAllCommentsBtn: $('exportAllCommentsBtn'),
+    exportAllJsonBtn: $('exportAllJsonBtn'),
+    historyList: $('historyList'),
+    selectAllHistory: $('selectAllHistory'),
+    deleteSelectedBtn: $('deleteSelectedBtn'),
     advancedToggle: $('advancedToggle'),
     advancedPanel: $('advancedPanel'),
     apiBase: $('apiBase'),
@@ -218,6 +387,13 @@ function initPopup() {
     delay: $('delay'),
     saveHint: $('saveHint'),
     resetBtn: $('resetBtn'),
+    learnPatternsBtn: $('learnPatternsBtn'),
+    learnFeedback: $('learnFeedback'),
+    verifyPatternsBtn: $('verifyPatternsBtn'),
+    resetPatternsBtn: $('resetPatternsBtn'),
+    patternReportCard: $('patternReportCard'),
+    patternReportList: $('patternReportList'),
+    togglePatternReportBtn: $('togglePatternReportBtn'),
   };
 
   let taskId = null;
@@ -235,16 +411,22 @@ function initPopup() {
 
   function loadConfig() {
     if (!chrome || !chrome.storage || !chrome.storage.local) return;
-    chrome.storage.local.get(['apiBase', 'model', 'apiKey', 'protocol', 'comments', 'commentsDepth', 'crawlDelay', 'limit'], (cfg) => {
+    chrome.storage.local.get(['apiBase', 'model', 'apiKey', 'protocol', 'comments', 'commentsDepth', 'crawlDelay', 'limit', 'sortType'], (cfg) => {
       if (cfg.apiBase && els.apiBase) els.apiBase.value = cfg.apiBase;
       if (cfg.model && els.model) els.model.value = cfg.model;
       if (cfg.apiKey && els.apiKey) els.apiKey.value = cfg.apiKey;
       if (cfg.protocol && els.protocol) els.protocol.value = cfg.protocol;
-      if (cfg.commentsDepth && els.commentsDepth) {
-        els.commentsDepth.value = String(cfg.commentsDepth);
-      } else if (typeof cfg.comments === 'boolean' && els.commentsDepth) {
-        els.commentsDepth.value = cfg.comments ? '20' : '0';
+      if (cfg.sortType && els.sortType) els.sortType.value = cfg.sortType;
+      
+      let depth = 20;
+      if (cfg.commentsDepth !== undefined) {
+        depth = Number(cfg.commentsDepth) || 0;
+      } else if (typeof cfg.comments === 'boolean') {
+        depth = cfg.comments ? 20 : 0;
       }
+      if (els.commentsDepth) els.commentsDepth.value = String(depth);
+      if (els.comments) els.comments.checked = depth > 0;
+
       if (typeof cfg.limit === 'number' && els.limit) els.limit.value = String(cfg.limit);
       if (typeof cfg.crawlDelay === 'number' && els.delay) {
         crawlDelay = cfg.crawlDelay;
@@ -255,17 +437,22 @@ function initPopup() {
 
   function saveConfig() {
     if (!chrome || !chrome.storage || !chrome.storage.local) return;
-    const depthVal = els.commentsDepth ? Number(els.commentsDepth.value) : 20;
+    const depthVal = els.commentsDepth ? Number(els.commentsDepth.value) : (els.comments && els.comments.checked ? 20 : 0);
+    const commentsChecked = depthVal > 0;
+    if (els.comments && els.comments.checked !== commentsChecked) {
+      els.comments.checked = commentsChecked;
+    }
     chrome.storage.local.set(
       {
         apiBase: els.apiBase ? els.apiBase.value.trim() : '',
         model: els.model ? els.model.value.trim() : '',
         apiKey: els.apiKey ? els.apiKey.value.trim() : '',
         protocol: els.protocol ? els.protocol.value : 'auto',
-        comments: depthVal > 0,
+        comments: commentsChecked,
         commentsDepth: depthVal,
         crawlDelay,
         limit: els.limit ? Number(els.limit.value) || 20 : 20,
+        sortType: els.sortType ? els.sortType.value : 'general',
       },
       () => showSaveHint()
     );
@@ -458,6 +645,7 @@ function initPopup() {
       commentsPerNote: depth,
       format: 'json',
       crawlDelay: Number(els.delay.value) || 0,
+      sortType: els.sortType ? els.sortType.value : 'general',
     });
     chrome.runtime.sendMessage(msg, (resp) => {
       if (chrome.runtime.lastError || !resp) {
@@ -489,7 +677,16 @@ function initPopup() {
   function onCancel() {
     if (taskId == null) return;
     showError('');
-    chrome.runtime.sendMessage({ type: 'CANCEL_TASK', taskId }, (resp) => {
+    if (els.cancelBtn) {
+      els.cancelBtn.disabled = true;
+      els.cancelBtn.textContent = '取消中...';
+    }
+    const currentCancelId = taskId;
+    chrome.runtime.sendMessage({ type: 'CANCEL_TASK', taskId: currentCancelId }, (resp) => {
+      if (els.cancelBtn) {
+        els.cancelBtn.disabled = false;
+        els.cancelBtn.textContent = '取消';
+      }
       if (chrome.runtime.lastError || !resp || !resp.ok) {
         showError('取消失败：' + (resp ? resp.error : '通信错误'));
         return;
@@ -497,7 +694,8 @@ function initPopup() {
       stopPolling();
       setRunningUI(false);
       showError('');
-      setProgress(0, '已取消', null);
+      setProgress(0, '已取消', '用户已终止采集');
+      taskId = null;
     });
   }
 
@@ -542,6 +740,95 @@ function initPopup() {
         }
       }
     );
+  }
+
+  // --- 动态规则自动学习（沙箱回测闭环）：分析当前页面并沉淀高可靠经验 ---
+  function updatePatternReport(report) {
+    if (!els.patternReportCard || !els.patternReportList) return;
+    if (!report || Object.keys(report).length === 0) {
+      els.patternReportCard.style.display = 'none';
+      return;
+    }
+    els.patternReportList.innerHTML = renderPatternReportHtml(report);
+    els.patternReportCard.style.display = 'flex';
+  }
+
+  function onLearnPatterns() {
+    if (!els.learnFeedback) return;
+    const key = els.apiKey ? els.apiKey.value.trim() : '';
+    if (!key) {
+      els.learnFeedback.className = 'test-feedback fail';
+      els.learnFeedback.textContent = '请先填写 API Key';
+      return;
+    }
+    els.learnFeedback.className = 'test-feedback';
+    els.learnFeedback.textContent = '正在获取页面 DOM 并唤醒大模型勘探规则...';
+    els.learnPatternsBtn.disabled = true;
+
+    // 优先通过 chrome.tabs 查询当前窗口的活动标签或任意小红书标签
+    function triggerLearn(targetTabId) {
+      chrome.runtime.sendMessage({ type: 'LEARN_SITE_PATTERNS', tabId: targetTabId }, (resp) => {
+        els.learnPatternsBtn.disabled = false;
+        if (chrome.runtime.lastError || !resp || !resp.ok) {
+          els.learnFeedback.className = 'test-feedback fail';
+          els.learnFeedback.textContent = '学习失败: ' + (resp?.message || resp?.error || '通信异常');
+        } else {
+          els.learnFeedback.className = 'test-feedback success';
+          els.learnFeedback.textContent = '✓ 成功！已提炼规则并完成页面沙箱验证';
+          if (resp.report) {
+            updatePatternReport(resp.report);
+          }
+        }
+      });
+    }
+
+    if (chrome && chrome.tabs && chrome.tabs.query) {
+      chrome.tabs.query({ url: '*://*.xiaohongshu.com/*' }, (tabs) => {
+        if (tabs && tabs.length > 0) {
+          const activeXhs = tabs.find((t) => t.active) || tabs[0];
+          triggerLearn(activeXhs.id);
+        } else {
+          chrome.tabs.query({ active: true, currentWindow: true }, (curTabs) => {
+            const tid = curTabs && curTabs[0] ? curTabs[0].id : null;
+            triggerLearn(tid);
+          });
+        }
+      });
+    } else {
+      triggerLearn(null);
+    }
+  }
+
+  function onVerifyPatterns() {
+    if (!els.learnFeedback) return;
+    els.learnFeedback.className = 'test-feedback';
+    els.learnFeedback.textContent = '正在当前页面回测所有动态规则...';
+    if (els.verifyPatternsBtn) els.verifyPatternsBtn.disabled = true;
+
+    chrome.runtime.sendMessage({ type: 'VERIFY_DYNAMIC_PATTERNS' }, (resp) => {
+      if (els.verifyPatternsBtn) els.verifyPatternsBtn.disabled = false;
+      if (chrome.runtime.lastError || !resp || !resp.ok) {
+        els.learnFeedback.className = 'test-feedback fail';
+        els.learnFeedback.textContent = '测试失败: ' + (resp?.message || resp?.error || '通信异常');
+      } else {
+        els.learnFeedback.className = 'test-feedback success';
+        els.learnFeedback.textContent = '✓ 规则在线回测完成';
+        if (resp.report) updatePatternReport(resp.report);
+      }
+    });
+  }
+
+  function onResetDynamicPatterns() {
+    if (typeof confirm === 'function' && !confirm('确定清空已学到的动态规则并还原官方基准吗？')) return;
+    chrome.runtime.sendMessage({ type: 'RESET_DYNAMIC_PATTERNS' }, (resp) => {
+      if (resp && resp.ok) {
+        if (els.learnFeedback) {
+          els.learnFeedback.className = 'test-feedback success';
+          els.learnFeedback.textContent = '✓ 已清空动态规则，恢复默认静态基线';
+        }
+        updatePatternReport(null);
+      }
+    });
   }
 
   // --- 导出：经由 SW 序列化后在本地下载（纯前端下载） ---
@@ -609,6 +896,17 @@ function initPopup() {
   els.exportCsvBtn.addEventListener('click', () => onExport('csv'));
   if (els.exportCommentsBtn) els.exportCommentsBtn.addEventListener('click', () => onExport('comments_csv'));
   if (els.testLlmBtn) els.testLlmBtn.addEventListener('click', onTestLlm);
+  if (els.learnPatternsBtn) els.learnPatternsBtn.addEventListener('click', onLearnPatterns);
+  if (els.verifyPatternsBtn) els.verifyPatternsBtn.addEventListener('click', onVerifyPatterns);
+  if (els.resetPatternsBtn) els.resetPatternsBtn.addEventListener('click', onResetDynamicPatterns);
+  if (els.togglePatternReportBtn) {
+    els.togglePatternReportBtn.addEventListener('click', () => {
+      if (!els.patternReportList) return;
+      const isHidden = els.patternReportList.style.display === 'none';
+      els.patternReportList.style.display = isHidden ? 'flex' : 'none';
+      els.togglePatternReportBtn.textContent = isHidden ? '收起' : '展开';
+    });
+  }
 
   if (els.openTabBtn) {
     els.openTabBtn.addEventListener('click', () => {
@@ -620,13 +918,27 @@ function initPopup() {
       }
     });
   }
-  if (els.commentsDepth) els.commentsDepth.addEventListener('change', saveConfig);
+  if (els.commentsDepth) {
+    els.commentsDepth.addEventListener('change', () => {
+      const depth = Number(els.commentsDepth.value) || 0;
+      if (els.comments) els.comments.checked = depth > 0;
+      saveConfig();
+    });
+  }
+  if (els.comments) {
+    els.comments.addEventListener('change', () => {
+      if (els.commentsDepth) {
+        els.commentsDepth.value = els.comments.checked ? '20' : '0';
+      }
+      saveConfig();
+    });
+  }
   if (els.protocol) els.protocol.addEventListener('change', saveConfig);
   if (els.apiBase) els.apiBase.addEventListener('change', saveConfig);
   if (els.model) els.model.addEventListener('change', saveConfig);
   if (els.apiKey) els.apiKey.addEventListener('change', saveConfig);
-  if (els.comments) els.comments.addEventListener('change', saveConfig);
   if (els.limit) els.limit.addEventListener('change', saveConfig);
+  if (els.sortType) els.sortType.addEventListener('change', saveConfig);
 
   if (els.delay) {
     els.delay.addEventListener('change', () => {
@@ -636,26 +948,224 @@ function initPopup() {
   }
 
   // 高级抽屉折叠
-  els.advancedToggle.addEventListener('click', () => {
-    els.advancedPanel.classList.toggle('open');
-    els.advancedToggle.parentElement.classList.toggle('open');
-    const expanded = els.advancedToggle.getAttribute('aria-expanded') === 'true';
-    els.advancedToggle.setAttribute('aria-expanded', String(!expanded));
-  });
+  if (els.advancedToggle) {
+    els.advancedToggle.addEventListener('click', () => {
+      els.advancedPanel.classList.toggle('open');
+      els.advancedToggle.parentElement.classList.toggle('open');
+      const expanded = els.advancedToggle.getAttribute('aria-expanded') === 'true';
+      els.advancedToggle.setAttribute('aria-expanded', String(!expanded));
+    });
+  }
 
   // 经验库重置（清除本地存储的 API Key 与设置）
-  els.resetBtn.addEventListener('click', () => {
-    if (chrome && chrome.storage && chrome.storage.local) {
-      chrome.storage.local.remove(['apiBase', 'model', 'apiKey', 'comments', 'crawlDelay', 'limit'], () => {
-        if (els.apiBase) els.apiBase.value = '';
-        if (els.model) els.model.value = '';
-        if (els.apiKey) els.apiKey.value = '';
-        if (els.comments) els.comments.checked = false;
-        if (els.delay) els.delay.value = '0';
-        showSaveHint('本地配置已重置');
-      });
+  if (els.resetBtn) {
+    els.resetBtn.addEventListener('click', () => {
+      if (chrome && chrome.storage && chrome.storage.local) {
+        chrome.storage.local.remove(['apiBase', 'model', 'apiKey', 'comments', 'crawlDelay', 'limit', 'sortType'], () => {
+          if (els.apiBase) els.apiBase.value = '';
+          if (els.model) els.model.value = '';
+          if (els.apiKey) els.apiKey.value = '';
+          if (els.comments) els.comments.checked = false;
+          if (els.delay) els.delay.value = '0';
+          if (els.sortType) els.sortType.value = 'general';
+          chrome.runtime.sendMessage({ type: 'RESET_DYNAMIC_PATTERNS' }, () => {});
+          showSaveHint('本地配置与 AI 经验库已重置');
+        });
+      }
+    });
+  }
+
+  // --- 历史记录面板与全量导出 ---
+  function openHistoryPanel() {
+    if (!els.historySection) return;
+    els.historySection.style.display = 'flex';
+    refreshHistoryData();
+  }
+
+  function closeHistoryPanel() {
+    if (!els.historySection) return;
+    els.historySection.style.display = 'none';
+  }
+
+  let selectedTaskIds = new Set();
+  let currentHistoryTasks = [];
+
+  function updateHistoryToolbar() {
+    const total = currentHistoryTasks.length;
+    const selectedCount = selectedTaskIds.size;
+    if (els.deleteSelectedBtn) {
+      els.deleteSelectedBtn.disabled = selectedCount === 0;
+      els.deleteSelectedBtn.textContent = `🗑️ 删除所选 (${selectedCount})`;
     }
-  });
+    if (els.selectAllHistory) {
+      els.selectAllHistory.checked = total > 0 && selectedCount === total;
+      els.selectAllHistory.indeterminate = selectedCount > 0 && selectedCount < total;
+    }
+  }
+
+  function deleteTasksAndRefresh(ids) {
+    if (!ids || ids.length === 0) return;
+    chrome.runtime.sendMessage({ type: 'DELETE_TASKS', taskIds: ids }, (resp) => {
+      if (chrome.runtime.lastError || !resp || !resp.ok) {
+        showError('删除历史记录失败：' + (resp?.error || '通信异常'));
+        return;
+      }
+      ids.forEach((id) => selectedTaskIds.delete(id));
+      if (ids.includes(taskId)) {
+        taskId = null;
+        loadLatestTask();
+      }
+      refreshHistoryData();
+    });
+  }
+
+  function refreshHistoryData() {
+    // 1. 获取全局笔记总数
+    chrome.runtime.sendMessage({ type: 'GET_ALL_NOTES', limit: 5000 }, (resp) => {
+      if (resp && resp.ok && Array.isArray(resp.notes)) {
+        if (els.historyAllCount) els.historyAllCount.textContent = resp.notes.length;
+      }
+    });
+
+    // 2. 获取历次任务列表
+    chrome.runtime.sendMessage({ type: 'GET_TASK_HISTORY', limit: 50 }, (resp) => {
+      if (!els.historyList) return;
+      if (!resp || !resp.ok || !Array.isArray(resp.tasks) || resp.tasks.length === 0) {
+        currentHistoryTasks = [];
+        selectedTaskIds.clear();
+        updateHistoryToolbar();
+        els.historyList.innerHTML = '<div style="font-size:12px;color:#94a3b8;padding:8px;text-align:center;">暂无历史采集任务</div>';
+        return;
+      }
+
+      currentHistoryTasks = resp.tasks;
+      const validSet = new Set(currentHistoryTasks.map((t) => t.id));
+      for (const id of selectedTaskIds) {
+        if (!validSet.has(id)) selectedTaskIds.delete(id);
+      }
+      updateHistoryToolbar();
+
+      els.historyList.innerHTML = currentHistoryTasks.map((t) => {
+        return renderHistoryItemHtml(t, {
+          isActive: t.id === taskId,
+          isChecked: selectedTaskIds.has(t.id),
+        });
+      }).join('');
+
+      // 绑定多选勾选框
+      const checkBoxes = els.historyList.querySelectorAll('.history-item-check');
+      checkBoxes.forEach((cb) => {
+        cb.addEventListener('click', (e) => e.stopPropagation());
+        cb.addEventListener('change', () => {
+          const tid = cb.getAttribute('data-task-id');
+          if (!tid) return;
+          if (cb.checked) selectedTaskIds.add(tid);
+          else selectedTaskIds.delete(tid);
+          updateHistoryToolbar();
+        });
+      });
+
+      // 绑定单条删除按钮
+      const delBtns = els.historyList.querySelectorAll('.history-del-single-btn');
+      delBtns.forEach((btn) => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const tid = btn.getAttribute('data-task-id');
+          if (!tid) return;
+          if (typeof confirm === 'function' && !confirm('确定删除该条历史任务及关联笔记吗？此操作不可逆。')) {
+            return;
+          }
+          deleteTasksAndRefresh([tid]);
+        });
+      });
+
+      // 绑定历史项点击切换
+      const items = els.historyList.querySelectorAll('.history-item');
+      items.forEach((it) => {
+        it.addEventListener('click', (e) => {
+          if (e.target.closest('.history-item-check') || e.target.closest('.history-del-single-btn')) return;
+          const tid = it.getAttribute('data-task-id');
+          if (tid) switchTask(tid);
+        });
+      });
+    });
+  }
+
+  function switchTask(targetTaskId) {
+    taskId = targetTaskId;
+    chrome.runtime.sendMessage({ type: 'GET_PROGRESS', taskId: targetTaskId }, (resp) => {
+      if (!resp || !resp.ok) return;
+      chrome.runtime.sendMessage({ type: 'EXPORT_DATA', taskId: targetTaskId, format: 'json' }, (noteResp) => {
+        let notes = [];
+        try {
+          if (noteResp && noteResp.ok && noteResp.data) notes = JSON.parse(noteResp.data);
+        } catch (_) {}
+        const pct = progressToPercent(resp.progress);
+        const label = statusLabel(resp.status);
+        const step = resp.progress?.stepMessage || null;
+        setProgress(pct, label, step);
+        renderPreviews(notes);
+        setRunningUI(resp.status === 'running', notes.length);
+        if (resp.status === 'running') startPolling();
+        else stopPolling();
+        closeHistoryPanel();
+      });
+    });
+  }
+
+  function onExportAll(format) {
+    chrome.runtime.sendMessage({ type: 'EXPORT_ALL_DATA', format }, (resp) => {
+      if (chrome.runtime.lastError || !resp || !resp.ok) {
+        showError('导出全量数据失败：' + (resp?.error || '通信异常'));
+        return;
+      }
+      const mime = (format === 'csv' || format === 'comments_csv') ? 'text/csv' : 'application/json';
+      downloadString(resp.filename || `xhs_all_notes.${format}`, mime, resp.data);
+    });
+  }
+
+  if (els.historyToggleBtn) {
+    els.historyToggleBtn.addEventListener('click', () => {
+      if (els.historySection && els.historySection.style.display === 'flex') {
+        closeHistoryPanel();
+      } else {
+        openHistoryPanel();
+      }
+    });
+  }
+  if (els.closeHistoryBtn) els.closeHistoryBtn.addEventListener('click', closeHistoryPanel);
+  if (els.exportAllCsvBtn) els.exportAllCsvBtn.addEventListener('click', () => onExportAll('csv'));
+  if (els.exportAllCommentsBtn) els.exportAllCommentsBtn.addEventListener('click', () => onExportAll('comments_csv'));
+  if (els.exportAllJsonBtn) els.exportAllJsonBtn.addEventListener('click', () => onExportAll('json'));
+
+  if (els.selectAllHistory) {
+    els.selectAllHistory.addEventListener('change', () => {
+      if (els.selectAllHistory.checked) {
+        currentHistoryTasks.forEach((t) => selectedTaskIds.add(t.id));
+      } else {
+        selectedTaskIds.clear();
+      }
+      if (els.historyList) {
+        const cbs = els.historyList.querySelectorAll('.history-item-check');
+        cbs.forEach((cb) => {
+          const tid = cb.getAttribute('data-task-id');
+          cb.checked = selectedTaskIds.has(tid);
+        });
+      }
+      updateHistoryToolbar();
+    });
+  }
+
+  if (els.deleteSelectedBtn) {
+    els.deleteSelectedBtn.addEventListener('click', () => {
+      if (selectedTaskIds.size === 0) return;
+      const count = selectedTaskIds.size;
+      if (typeof confirm === 'function' && !confirm(`确定删除选中的 ${count} 个历史任务及其全部笔记吗？此操作不可逆。`)) {
+        return;
+      }
+      deleteTasksAndRefresh(Array.from(selectedTaskIds));
+    });
+  }
 
   loadConfig();
   loadLatestTask();
@@ -678,6 +1188,10 @@ if (typeof module !== 'undefined' && module.exports) {
     isAuthRequired,
     formatDetailStatus,
     renderNotePreviewRow,
+    formatTaskHistoryItem,
+    renderHistoryItemHtml,
     escapeHtml,
+    formatPatternReport,
+    renderPatternReportHtml,
   };
 }

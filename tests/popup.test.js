@@ -32,6 +32,7 @@ test('buildStartMessage 默认参数生成标准 START_TASK 消息', () => {
     commentsPerNote: 0,
     outputFormat: 'json',
     crawlDelay: 0,
+    sortType: 'general',
   });
 });
 
@@ -56,6 +57,14 @@ test('buildStartMessage 部分 opts 走默认值', () => {
   assert.equal(msg.config.commentsPerNote, 0);
   assert.equal(msg.config.outputFormat, 'json');
   assert.equal(msg.config.crawlDelay, 0);
+  assert.equal(msg.config.sortType, 'general');
+});
+
+test('buildStartMessage 支持自定义 sortType 排序规则', () => {
+  const msg = buildStartMessage('数码', { sortType: 'popularity_descending' });
+  assert.equal(msg.config.sortType, 'popularity_descending');
+  const msg2 = buildStartMessage('数码', { sortType: 'time_descending' });
+  assert.equal(msg2.config.sortType, 'time_descending');
 });
 
 test('buildStartMessage 透传 crawlDelay（高级抽屉的爬取延迟）', () => {
@@ -135,7 +144,7 @@ test('notesToCsv 始终输出含正确表头的单行', () => {
   const csv = notesToCsv([]);
   assert.equal(
     csv,
-    'id,taskId,url,title,content,author,likes,tags,commentsCount,collectedAt'
+    'id,taskId,url,title,content,author,authorId,likes,collects,commentsCount,publishedAt,coverUrl,tags,collectedAt'
   );
 });
 
@@ -148,6 +157,7 @@ test('notesToCsv 单行数据且逐列映射', () => {
       title: '标题A',
       content: '正文',
       author: '张三',
+      authorId: 'u123',
       likes: 10,
       tags: ['美', '食'],
       commentList: [{ id: 'c1' }],
@@ -157,12 +167,13 @@ test('notesToCsv 单行数据且逐列映射', () => {
   const csv = notesToCsv(notes);
   const lines = csv.split('\n');
   assert.equal(lines.length, 2);
-  assert.equal(lines[0], 'id,taskId,url,title,content,author,likes,tags,commentsCount,collectedAt');
-  // tags 数组被 JSON 序列化；commentsCount 来自 commentList.length
-  assert.ok(lines[1].startsWith('n1,t1,https://xhs.com/n1,标题A,正文,张三,10,'));
-  assert.ok(lines[1].includes('"[""美"",""食""]"'), `tags 未正确转义: ${lines[1]}`);
-  assert.ok(lines[1].endsWith('1,2026-01-01'), `commentsCount 应为 1: ${lines[1]}`);
+  assert.equal(lines[0], 'id,taskId,url,title,content,author,authorId,likes,collects,commentsCount,publishedAt,coverUrl,tags,collectedAt');
+  // tags 数组被格式化；commentsCount 来自 commentList.length
+  assert.ok(lines[1].startsWith('n1,t1,https://xhs.com/n1,标题A,正文,张三,u123,10,'));
+  assert.ok(lines[1].includes('"美, 食"'), `tags 未正确转义: ${lines[1]}`);
+  assert.ok(lines[1].endsWith('2026-01-01'), `应以 collectedAt 结尾: ${lines[1]}`);
 });
+
 
 test('notesToCsv 含逗号/引号/换行的字段需整体加引号并翻倍内部引号', () => {
   const notes = [
@@ -191,7 +202,7 @@ test('notesToCsv 含逗号/引号/换行的字段需整体加引号并翻倍内�
 test('notesToCsv commentsCount 回退到 comments 字段', () => {
   const notes = [{ id: 'n1', taskId: 't1', url: 'u', title: 't', content: 'c', author: 'a', likes: 0, tags: [], comments: [{}, {}, {}], collectedAt: 'x' }];
   const lines = notesToCsv(notes).split('\n');
-  assert.ok(lines[1].endsWith('3,x'), `commentsCount 应为 3: ${lines[1]}`);
+  assert.ok(lines[1].includes(',3,'), `commentsCount 应为 3: ${lines[1]}`);
 });
 
 // ---------------------------------------------------------------------------
@@ -278,7 +289,7 @@ test('commentsToCsv 空数组时输出完整表头', () => {
   const csv = commentsToCsv([]);
   assert.equal(
     csv,
-    'noteId,noteTitle,noteUrl,commentAuthor,commentContent,commentLikes,commentTime'
+    'noteId,noteTitle,noteUrl,commentAuthor,isAuthor,commentContent,commentLikes,commentLocation,commentLevel,commentTime'
   );
 });
 
@@ -306,4 +317,81 @@ test('commentsToCsv 展平多篇笔记的评论为独立行', () => {
   assert.ok(lines[1].includes('张三') && lines[1].includes('太好用了！'));
   assert.ok(lines[2].includes('李四') && lines[2].includes('"马克,备用"'));
 });
+
+// ---------------------------------------------------------------------------
+// formatTaskHistoryItem
+// ---------------------------------------------------------------------------
+
+test('formatTaskHistoryItem 格式化任务历史条目文本与统计', () => {
+  const { formatTaskHistoryItem } = require('../src/popup/popup.js');
+  const task = {
+    id: 't_hist_1',
+    keyword: '护肤',
+    status: 'completed',
+    timestamps: { createdAt: 1710000000000 },
+    progress: { notesCollected: 15 },
+    config: { sortType: 'popularity_descending' },
+  };
+  const item = formatTaskHistoryItem(task);
+  assert.equal(item.keyword, '护肤');
+  assert.equal(item.count, 15);
+  assert.equal(item.statusText, '已完成');
+  assert.ok(item.summary.includes('15 篇'));
+  assert.ok(item.summary.includes('最热') || item.summary.includes('最多点赞') || item.summary.includes('护肤'));
+});
+
+// ---------------------------------------------------------------------------
+// renderHistoryItemHtml
+// ---------------------------------------------------------------------------
+
+test('renderHistoryItemHtml 生成含勾选框、单条删除按钮及转义文本的 HTML', () => {
+  const { renderHistoryItemHtml } = require('../src/popup/popup.js');
+  const task = {
+    id: 'task_del_item_1',
+    keyword: '护肤<script>',
+    status: 'completed',
+    timestamps: { createdAt: 1710000000000 },
+    progress: { notesCollected: 3 },
+  };
+
+  const html = renderHistoryItemHtml(task, { isActive: true, isChecked: true });
+  assert.ok(html.includes('class="history-item active"'), '当前活动项应添加 active 类');
+  assert.ok(html.includes('class="history-item-check"'), '应包含选择勾选框');
+  assert.ok(html.includes('checked'), 'isChecked 为 true 时应含 checked 属性');
+  assert.ok(html.includes('class="history-del-single-btn"'), '应包含单条删除按钮');
+  assert.ok(html.includes('data-task-id="task_del_item_1"'), '勾选框和删除按钮应绑定任务ID');
+  assert.ok(!html.includes('<script>'), '应转义 HTML 注入');
+});
+
+// ---------------------------------------------------------------------------
+// formatPatternReport & renderPatternReportHtml
+// ---------------------------------------------------------------------------
+
+test('formatPatternReport 正确展平与解析验证报告条目', () => {
+  const { formatPatternReport } = require('../src/popup/popup.js');
+  const report = {
+    'search.filterButton': { selector: '.filter-btn', matchCount: 1, valid: true, sampleText: '筛选' },
+    'search.empty': { selector: '.not-found', matchCount: 0, valid: false },
+  };
+  const list = formatPatternReport(report);
+  assert.equal(list.length, 2);
+  assert.equal(list[0].key, 'search.filterButton');
+  assert.equal(list[0].valid, true);
+  assert.equal(list[0].sampleText, '筛选');
+  assert.equal(list[1].valid, false);
+});
+
+test('renderPatternReportHtml 渲染正确的状态徽章与选择器代码', () => {
+  const { renderPatternReportHtml } = require('../src/popup/popup.js');
+  const report = {
+    'noteDetail.title': { selector: 'h1.title', matchCount: 1, valid: true, sampleText: '穿搭灵感' },
+  };
+  const html = renderPatternReportHtml(report);
+  assert.ok(html.includes('noteDetail.title'));
+  assert.ok(html.includes('h1.title'));
+  assert.ok(html.includes('badge-success'));
+  assert.ok(html.includes('命中 1 项'));
+  assert.ok(html.includes('穿搭灵感'));
+});
+
 

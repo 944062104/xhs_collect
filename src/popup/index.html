@@ -14,7 +14,10 @@
         <h1>小红书采集助手</h1>
         <p class="sub">关键词一键采集笔记与评论</p>
       </div>
-      <button id="openTabBtn" class="btn-tab" title="在新标签页中打开（防止点击外部失焦关闭）">⤢ 独立窗口</button>
+      <div class="head-actions">
+        <button id="historyToggleBtn" class="btn-tab" title="查看历史采集任务与全部笔记">📜 历史记录</button>
+        <button id="openTabBtn" class="btn-tab" title="在新标签页中打开（防止点击外部失焦关闭）">⤢ 独立窗口</button>
+      </div>
     </header>
 
     <section class="core">
@@ -23,7 +26,15 @@
         <input id="keyword" type="text" placeholder="如：护肤, 穿搭, 探店（多词自动连续采）" autofocus />
       </label>
 
-      <div class="field-grid-2">
+      <div class="field-grid-3">
+        <label class="field">
+          <span>搜索排序</span>
+          <select id="sortType">
+            <option value="general" selected>综合排序（默认）</option>
+            <option value="popularity_descending">最多点赞（最热）</option>
+            <option value="time_descending">最新发布</option>
+          </select>
+        </label>
         <label class="field">
           <span>采集数量</span>
           <select id="limit">
@@ -130,11 +141,63 @@
           </select>
         </label>
 
-        <div class="config-status-row">
+        <div class="pattern-learner-box">
+          <div class="pattern-learner-header">🧠 <b>AI 规则自学习与沙箱回测</b></div>
+          <div class="pattern-learner-desc">当搜索排序或卡片失效时，自动勘探 DOM 并经真实页面沙箱验证后沉淀为高可靠规则。</div>
+          <div class="pattern-learner-actions">
+            <button id="learnPatternsBtn" class="btn btn-outline btn-small" style="flex:1;">学习并自愈规则</button>
+            <button id="verifyPatternsBtn" class="btn btn-ghost btn-small" title="在当前页面重新测试所有动态规则有效性">在当前页测试</button>
+            <button id="resetPatternsBtn" class="btn btn-ghost danger btn-small" title="清空动态规则，还原静态基准">清空规则</button>
+          </div>
+          <div id="learnFeedback" class="test-feedback"></div>
+
+          <!-- 勘测报告折叠面板 -->
+          <div id="patternReportCard" class="pattern-report-card" style="display:none;">
+            <div class="pattern-report-title">
+              <span>📊 规则实测报告</span>
+              <button id="togglePatternReportBtn" class="btn-small-link">收起</button>
+            </div>
+            <div id="patternReportList" class="pattern-report-list"></div>
+          </div>
+        </div>
+
+        <div class="config-status-row" style="margin-top:8px;">
           <span id="saveHint" class="save-hint"></span>
           <button id="resetBtn" class="btn btn-ghost danger btn-small">清空本地配置</button>
         </div>
       </div>
+    </section>
+
+    <!-- 历史记录面板（抽屉） -->
+    <section id="historySection" class="history-card" style="display:none">
+      <div class="history-header">
+        <span class="history-title">📜 历史采集记录</span>
+        <button id="closeHistoryBtn" class="btn-small-ghost">✕ 关闭</button>
+      </div>
+
+      <!-- 全局数据汇总与全量导出 -->
+      <div class="history-all-box">
+        <div class="history-all-meta">
+          <span>本地累计存储：<strong id="historyAllCount">0</strong> 篇笔记</span>
+        </div>
+        <div class="history-all-actions">
+          <button id="exportAllCsvBtn" class="btn btn-small btn-outline">全量笔记 CSV</button>
+          <button id="exportAllCommentsBtn" class="btn btn-small btn-outline">全量评论 CSV</button>
+          <button id="exportAllJsonBtn" class="btn btn-small btn-outline">全量 JSON</button>
+        </div>
+      </div>
+
+      <div class="history-sub-title">最近任务列表（点击可调入当前视图）</div>
+      <div class="history-toolbar">
+        <label class="history-select-all-label">
+          <input type="checkbox" id="selectAllHistory">
+          <span>全选</span>
+        </label>
+        <div class="history-toolbar-actions">
+          <button id="deleteSelectedBtn" class="btn btn-small danger" disabled>🗑️ 删除所选 (0)</button>
+        </div>
+      </div>
+      <div id="historyList" class="history-list"></div>
     </section>
   </main>
 
