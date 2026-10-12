@@ -399,7 +399,7 @@ test('renderPatternReportHtml 渲染正确的状态徽章与选择器代码', ()
 // renderRemediationItem
 // ---------------------------------------------------------------------------
 
-test('renderRemediationItem 渲染 AI 自愈决策流水卡片', () => {
+test('renderRemediationItem 渲染 AI 自愈决策流水卡片各状态', () => {
   const { renderRemediationItem } = require('../src/popup/popup.js');
   const item = {
     round: 1,
@@ -413,7 +413,7 @@ test('renderRemediationItem 渲染 AI 自愈决策流水卡片', () => {
   assert.ok(html.includes('第 1 轮研判'));
   assert.ok(html.includes('浮层未展开，先点击筛选'));
   assert.ok(html.includes('CLICK [&quot;.filter-btn&quot;]'));
-  assert.ok(html.includes('remediation-badge pending'));
+  assert.ok(html.includes('remediation-badge warning'));
   assert.ok(html.includes('已执行'));
 
   const itemSuccess = {
@@ -425,6 +425,30 @@ test('renderRemediationItem 渲染 AI 自愈决策流水卡片', () => {
   assert.ok(htmlSuccess.includes('第 2 轮研判'));
   assert.ok(htmlSuccess.includes('remediation-badge success'));
   assert.ok(htmlSuccess.includes('已达成契约'));
+
+  const itemError = {
+    round: 3,
+    diagnosis: '调用 LLM 失败: 401 Unauthorized',
+    action: 'LLM_ERROR',
+    executed: false,
+    achieved: false,
+  };
+  const htmlError = renderRemediationItem(itemError);
+  assert.ok(htmlError.includes('调用异常'));
+  assert.ok(htmlError.includes('remediation-badge fail'));
+  assert.ok(htmlError.includes('401 Unauthorized'));
+
+  const itemUnexecuted = {
+    round: 4,
+    diagnosis: '选择器在 DOM 中未找到',
+    action: 'CLICK',
+    selector: ['.bad-sel'],
+    executed: false,
+    achieved: false,
+  };
+  const htmlUnexecuted = renderRemediationItem(itemUnexecuted);
+  assert.ok(htmlUnexecuted.includes('未生效'));
+  assert.ok(htmlUnexecuted.includes('remediation-badge pending'));
 });
 
 

@@ -837,6 +837,14 @@ input[type="checkbox"] {
   background: #fef3c7;
   color: #92400e;
 }
+.remediation-badge.warning {
+  background: #ffedd5;
+  color: #9a3412;
+}
+.remediation-badge.fail {
+  background: #fee2e2;
+  color: #991b1b;
+}
 .remediation-diag {
   color: #334155;
   font-size: 11px;
@@ -845,6 +853,23 @@ input[type="checkbox"] {
   color: #64748b;
   font-family: monospace;
   font-size: 10px;
+}
+.remediation-summary {
+  font-size: 11px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  margin-top: 4px;
+  font-weight: 500;
+}
+.remediation-summary.success {
+  background: #f0fdf4;
+  color: #166534;
+  border: 1px solid #bbf7d0;
+}
+.remediation-summary.fail {
+  background: #fef2f2;
+  color: #991b1b;
+  border: 1px solid #fecaca;
 }
 
 

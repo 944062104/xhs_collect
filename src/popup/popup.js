@@ -253,10 +253,28 @@ function renderRemediationItem(item) {
   if (!item) return '';
   const round = item.round || 1;
   const isSuccess = Boolean(item.achieved);
-  const badgeText = isSuccess ? '已达成契约' : (item.executed ? '已执行' : '待执行');
-  const badgeClass = isSuccess ? 'success' : 'pending';
-  const diag = escapeHtml(item.diagnosis || '现场研判中...');
-  const actionText = escapeHtml(item.action ? `${item.action} ${item.selector ? JSON.stringify(item.selector) : ''}` : '');
+  let badgeText = '未生效';
+  let badgeClass = 'pending';
+
+  if (isSuccess) {
+    badgeText = '已达成契约';
+    badgeClass = 'success';
+  } else if (item.action === 'LLM_ERROR' || (item.error && !item.executed)) {
+    badgeText = '调用异常';
+    badgeClass = 'fail';
+  } else if (item.action === 'UNRECOVERABLE') {
+    badgeText = '不可恢复';
+    badgeClass = 'fail';
+  } else if (item.executed) {
+    badgeText = '已执行';
+    badgeClass = 'warning';
+  } else {
+    badgeText = '未生效';
+    badgeClass = 'pending';
+  }
+
+  const diag = escapeHtml(item.diagnosis || item.reason || item.error || '无详细说明');
+  const actionText = escapeHtml(item.action ? `${item.action} ${item.selector && item.selector.length > 0 ? JSON.stringify(item.selector) : ''}` : '');
 
   return `
     <div class="remediation-item">
@@ -427,6 +445,7 @@ function initPopup() {
     closeDebugModalBtn: $('closeDebugModalBtn'),
     remediationCard: $('remediationCard'),
     remediationList: $('remediationList'),
+    remediationStatusBadge: $('remediationStatusBadge'),
     toggleRemediationBtn: $('toggleRemediationBtn'),
   };
 
@@ -606,7 +625,20 @@ function initPopup() {
       if (els.remediationCard && els.remediationList) {
         if (remState && Array.isArray(remState.history) && remState.history.length > 0) {
           els.remediationCard.style.display = 'block';
-          els.remediationList.innerHTML = remState.history.map(renderRemediationItem).join('');
+          if (els.remediationStatusBadge) {
+            if (remState.finished) {
+              els.remediationStatusBadge.innerHTML = remState.achieved
+                ? '<span class="remediation-badge success" style="margin-left:6px;">✓ 排序对齐成功</span>'
+                : '<span class="remediation-badge fail" style="margin-left:6px;">⚠️ 排序自学未达成</span>';
+            } else {
+              els.remediationStatusBadge.innerHTML = `<span class="remediation-badge pending" style="margin-left:6px;">第 ${remState.history.length} 轮学习中</span>`;
+            }
+          }
+          let itemsHtml = remState.history.map(renderRemediationItem).join('');
+          if (remState.summary) {
+            itemsHtml += `<div class="remediation-summary ${remState.achieved ? 'success' : 'fail'}">${escapeHtml(remState.summary)}</div>`;
+          }
+          els.remediationList.innerHTML = itemsHtml;
         } else if (resp.status !== 'running') {
           // 非运行态且无流水时保持隐藏
           els.remediationCard.style.display = 'none';
